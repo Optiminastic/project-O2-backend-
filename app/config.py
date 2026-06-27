@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,18 @@ class Settings(BaseSettings):
 
     app_name: str = "Project O2 API"
     api_v1_prefix: str = "/api"
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _normalize_db_scheme(cls, v: str) -> str:
+        # Render / Heroku hand out URLs starting with `postgres://` or
+        # `postgresql://`. Our stack uses psycopg3, which needs the explicit
+        # `postgresql+psycopg://` driver scheme — rewrite it if missing.
+        if v.startswith("postgres://"):
+            v = "postgresql://" + v[len("postgres://") :]
+        if v.startswith("postgresql://"):
+            v = "postgresql+psycopg://" + v[len("postgresql://") :]
+        return v
 
 
 @lru_cache

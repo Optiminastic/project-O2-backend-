@@ -37,9 +37,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    # Allow the configured origin plus any localhost port (dev servers shift ports).
+    # Allow the configured production origin (e.g. the Vercel URL), plus any
+    # localhost port for dev, plus any *.vercel.app preview/prod deployment.
     allow_origins=[settings.frontend_origin],
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origin_regex=r"https://([a-z0-9-]+\.)*vercel\.app|http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

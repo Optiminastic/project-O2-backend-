@@ -1,0 +1,27 @@
+# Render Blueprint — provisions a Postgres DB + the FastAPI web service.
+# In Render: New > Blueprint > pick the project-O2-backend- repo. It reads this file.
+databases:
+  - name: projecto2-db
+    databaseName: projecto2
+    user: o2_admin
+    plan: free # free Postgres expires after 90 days; upgrade for production
+
+services:
+  - type: web
+    name: projecto2-api
+    runtime: python
+    plan: free # free web services sleep after 15 min idle; first request then cold-starts
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL # injected from the managed Postgres above
+        fromDatabase:
+          name: projecto2-db
+          property: connectionString
+      - key: SECRET_KEY # JWT signing key — generated once, kept stable
+        generateValue: true
+      - key: FRONTEND_ORIGIN # set to your Vercel URL, e.g. https://project-o2-frontend.vercel.app
+        sync: false
