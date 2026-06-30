@@ -8,6 +8,12 @@ class UserRole(str, Enum):
     FINANCE_EXECUTIVE = "FINANCE_EXECUTIVE"
 
 
+class InvitationStatus(str, Enum):
+    PENDING = "Pending"
+    ACCEPTED = "Accepted"
+    REVOKED = "Revoked"
+
+
 class InvoiceStatus(str, Enum):
     DRAFT = "Draft"
     SENT = "Sent"

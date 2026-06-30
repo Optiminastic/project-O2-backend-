@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import ReportReviewStatus, ApprovalStatus, VerificationStatus
+from app.models.enums import ReportReviewStatus, ApprovalStatus, VerificationStatus, PaymentMode
 
 
 # ---------- Reports ----------
@@ -97,6 +97,25 @@ class ApprovalOut(BaseModel):
 
 class ApprovalDetail(ApprovalOut):
     actions: list[ApprovalActionOut] = []
+
+
+# ---------- Payment receipts (client money in) ----------
+class PaymentReceiptOut(BaseModel):
+    """A recorded client payment, enriched with its invoice number / client."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    invoice_id: int
+    invoice_number: str
+    client_id: int
+    amount: float
+    payment_date: date
+    payment_mode: PaymentMode
+    bank_reference: str | None
+    tds_deducted: float
+    gst_component: float
+    remarks: str | None
 
 
 # ---------- Verification ----------

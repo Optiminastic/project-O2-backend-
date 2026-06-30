@@ -1,4 +1,7 @@
-"""Seed Project O2 with demo users and representative data across every module.
+"""Seed Project O2 with representative business data across every module.
+
+No users are seeded — the workspace starts empty so the first person to sign up
+becomes the CEO, who then invites the rest of the team (the 'circle').
 
 Run:  python -m app.seed
 Idempotent: it clears existing data first, then reseeds.
@@ -8,10 +11,7 @@ from datetime import date, timedelta
 
 from app.database import Base, engine, SessionLocal
 import app.models  # noqa: F401
-from app.core.security import hash_password
 from app.models import (
-    User,
-    UserRole,
     Agent,
     Client,
     ClientInvoice,
@@ -35,16 +35,6 @@ from app.models import (
 from app.services.taxation import compute_gst, compute_tds, vendor_net_payable
 from app.services.invoice_lock import recompute_invoice
 
-DEMO_PASSWORD = "Password123!"
-
-USERS = [
-    ("Aarav Khanna", "ceo@optiminastic.com", UserRole.ADMIN_CEO),
-    ("Lena Okafor", "cfo@optiminastic.com", UserRole.CFO),
-    ("Daniel Roy", "manager@optiminastic.com", UserRole.FINANCE_MANAGER),
-    ("Priya Nair", "exec@optiminastic.com", UserRole.FINANCE_EXECUTIVE),
-]
-
-
 def reset() -> None:
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -54,14 +44,6 @@ def seed() -> None:
     reset()
     db = SessionLocal()
     try:
-        # Users
-        users = {}
-        for name, email, role in USERS:
-            u = User(name=name, email=email, hashed_password=hash_password(DEMO_PASSWORD), role=role)
-            db.add(u)
-            users[role] = u
-        db.flush()
-
         # Referral agents (introduce clients and earn commission on their invoicing)
         agents = [
             Agent(business_name="Apex Referral Partners", legal_name="Apex Referral Partners LLP",
@@ -178,13 +160,13 @@ def seed() -> None:
         # Payment approval — push it through to PAYMENT_READY
         appr = PaymentApproval(payee_name="Quanta Research LLP", amount=vinv.net_payable, purpose="Vendor payout · VINV-7781",
                                vendor_invoice_id=vinv.id, tax_deductions=vinv.tds_amount, net_payable=vinv.net_payable,
-                               bank_details="HDFC Bank · 50100123456789 · HDFC0001234", requested_by_id=users[UserRole.FINANCE_MANAGER].id,
+                               bank_details="HDFC Bank · 50100123456789 · HDFC0001234", requested_by_id=None,
                                status=ApprovalStatus.PAYMENT_READY, cfo_comment="Within budget.", ceo_comment="Approved.")
         db.add(appr)
 
         # A second approval awaiting CEO sign-off
         appr2 = PaymentApproval(payee_name="Lumen Media", amount=90000, purpose="Creative production",
-                                tax_deductions=1800, net_payable=88200, requested_by_id=users[UserRole.FINANCE_MANAGER].id,
+                                tax_deductions=1800, net_payable=88200, requested_by_id=None,
                                 status=ApprovalStatus.SUBMITTED_CEO)
         db.add(appr2)
         db.flush()
@@ -208,10 +190,9 @@ def seed() -> None:
         ])
 
         db.commit()
-        print("Seed complete.")
-        print(f"  Users (password = {DEMO_PASSWORD}):")
-        for name, email, role in USERS:
-            print(f"    {role.value:<18} {email}")
+        print("Seed complete (business data only — no users).")
+        print("  Open the app and sign up: the first account becomes the CEO,")
+        print("  who then invites the rest of the team from the Circle page.")
     finally:
         db.close()
 

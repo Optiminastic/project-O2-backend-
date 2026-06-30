@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.deps import require_roles
 from app.core.rbac import NON_EXEC
-from app.models import ClientInvoice, VendorInvoice, User, GstStatus
+from app.models import ClientInvoice, VendorInvoice, Payment, User, GstStatus
+from app.schemas.misc import PaymentReceiptOut
 from app.services.taxation import compute_gst, compute_tds
 
 router = APIRouter(prefix="/taxation", tags=["taxation"])
@@ -45,6 +46,33 @@ def taxation_summary(db: Session = Depends(get_db), user: User = Depends(require
         "client_invoice_count": len(client_invoices),
         "vendor_invoice_count": len(vendor_invoices),
     }
+
+
+@router.get("/receipts", response_model=list[PaymentReceiptOut])
+def receipts(db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
+    """Ledger of every client payment received, newest first."""
+    rows = (
+        db.query(Payment)
+        .join(ClientInvoice, Payment.invoice_id == ClientInvoice.id)
+        .order_by(Payment.payment_date.desc(), Payment.id.desc())
+        .all()
+    )
+    return [
+        PaymentReceiptOut(
+            id=p.id,
+            invoice_id=p.invoice_id,
+            invoice_number=p.invoice.invoice_number,
+            client_id=p.invoice.client_id,
+            amount=p.amount,
+            payment_date=p.payment_date,
+            payment_mode=p.payment_mode,
+            bank_reference=p.bank_reference,
+            tds_deducted=p.tds_deducted,
+            gst_component=p.gst_component,
+            remarks=p.remarks,
+        )
+        for p in rows
+    ]
 
 
 @router.get("/gst/pending")

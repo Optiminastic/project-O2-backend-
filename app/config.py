@@ -19,6 +19,20 @@ class Settings(BaseSettings):
     app_name: str = "Project O2 API"
     api_v1_prefix: str = "/api"
 
+    # Only emails on this domain may sign up or be invited (the workspace).
+    workspace_email_domain: str = "optiminastic.com"
+
+    # Outgoing email (team invitations). If smtp_host is blank, sending is
+    # skipped gracefully and the invite link is surfaced in the UI / logs instead.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "Project O2"
+    smtp_use_tls: bool = True
+    invite_expire_hours: int = 168  # 7 days
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _normalize_db_scheme(cls, v: str) -> str:
