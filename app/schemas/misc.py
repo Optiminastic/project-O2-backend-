@@ -167,6 +167,13 @@ class AuditLogOut(BaseModel):
 
 
 # ---------- Dashboard ----------
+class CashflowPoint(BaseModel):
+    """One bucket of real received revenue (a week / month / year)."""
+
+    label: str
+    value: float
+
+
 class DashboardSummary(BaseModel):
     total_clients: int
     total_vendors: int

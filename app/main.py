@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.config import settings
 from app.database import Base, engine
@@ -27,6 +28,20 @@ async def lifespan(app: FastAPI):
     # Ensure tables exist (Alembic is the source of truth in production; this is a
     # convenience for first run / SQLite dev).
     Base.metadata.create_all(bind=engine)
+    # Lightweight additive migrations. create_all() only creates missing *tables*,
+    # never new columns on existing ones, and this project has no Alembic yet — so
+    # apply idempotent ADD COLUMNs here. Safe to run on every startup.
+    for stmt in (
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
+        # Backfill legacy rows: existing members joined by accepting an invite (or
+        # signing up), which required a login — seed their last-active from join time.
+        "UPDATE users SET last_login_at = created_at WHERE last_login_at IS NULL",
+    ):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception:  # noqa: BLE001 — non-Postgres (e.g. SQLite) or already applied
+            pass
     yield
 
 

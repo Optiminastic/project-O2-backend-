@@ -31,6 +31,8 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
     token = create_access_token(subject=user.email, role=user.role.value, name=user.name)
     return Token(access_token=token)
 
@@ -60,6 +62,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         email=email,
         hashed_password=hash_password(payload.password),
         role=UserRole.ADMIN_CEO,
+        last_login_at=datetime.now(timezone.utc),
     )
     db.add(user)
     db.commit()
@@ -105,6 +108,7 @@ def accept_invite(token: str, payload: AcceptInviteRequest, db: Session = Depend
         email=inv.email,
         hashed_password=hash_password(payload.password),
         role=inv.role,
+        last_login_at=datetime.now(timezone.utc),
     )
     db.add(user)
     inv.status = InvitationStatus.ACCEPTED

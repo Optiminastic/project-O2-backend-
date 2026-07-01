@@ -1,6 +1,7 @@
 from collections import defaultdict
+from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -9,6 +10,7 @@ from app.models import (
     Client,
     Vendor,
     ClientInvoice,
+    Payment,
     PaymentApproval,
     VendorInvoice,
     BankTransaction,
@@ -17,7 +19,9 @@ from app.models import (
     VerificationStatus,
     GstStatus,
 )
-from app.schemas.misc import DashboardSummary
+from app.schemas.misc import DashboardSummary, CashflowPoint
+
+_MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -25,6 +29,54 @@ PENDING_APPROVAL_STATES = {
     ApprovalStatus.SUBMITTED_CEO,
     ApprovalStatus.PAYMENT_READY,
 }
+
+
+@router.get("/revenue", response_model=list[CashflowPoint])
+def revenue(
+    range_: str = Query("monthly", alias="range"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Real received-revenue series, bucketed by week / month / year from actual payments."""
+    payments = db.query(Payment).all()
+    today = date.today()
+    rng = range_.lower()
+
+    if rng == "weekly":
+        # Last 8 weeks (oldest → newest), keyed by each date's Monday.
+        this_monday = today - timedelta(days=today.weekday())
+        buckets = [0.0] * 8
+        for p in payments:
+            pm = p.payment_date - timedelta(days=p.payment_date.weekday())
+            idx = 7 - ((this_monday - pm).days // 7)
+            if 0 <= idx < 8:
+                buckets[idx] += p.amount
+        return [CashflowPoint(label=f"W{i + 1}", value=round(buckets[i], 2)) for i in range(8)]
+
+    if rng == "yearly":
+        buckets = [0.0] * 5
+        for p in payments:
+            idx = 4 - (today.year - p.payment_date.year)
+            if 0 <= idx < 5:
+                buckets[idx] += p.amount
+        years = [today.year - (4 - i) for i in range(5)]
+        return [CashflowPoint(label=str(years[i]), value=round(buckets[i], 2)) for i in range(5)]
+
+    # Monthly (default) — last 12 months.
+    seq: list[tuple[int, int]] = []
+    for back in range(11, -1, -1):
+        mm, yy = today.month - back, today.year
+        while mm <= 0:
+            mm += 12
+            yy -= 1
+        seq.append((yy, mm))
+    idxmap = {key: i for i, key in enumerate(seq)}
+    buckets = [0.0] * 12
+    for p in payments:
+        key = (p.payment_date.year, p.payment_date.month)
+        if key in idxmap:
+            buckets[idxmap[key]] += p.amount
+    return [CashflowPoint(label=_MONTH_ABBR[seq[i][1]], value=round(buckets[i], 2)) for i in range(12)]
 
 
 @router.get("/summary", response_model=DashboardSummary)
