@@ -1,0 +1,62 @@
+# project-O2-backend on the shared Hetzner VPS — own Postgres + API; shared Caddy.
+#
+# Mirrors the circle-be topology:
+#   • runs its OWN Postgres (`db`) on the VPS,
+#   • runs the API (`api`) with an uploads volume (O2 stores uploads on disk),
+#   • does NOT run its own Caddy (80/443 are owned by avora's Caddy). The API joins
+#     avora's reverse-proxy network so that Caddy can route
+#     api.o2.optiminastic.com -> project-o2-api:8000.
+# We never touch the avora or circle containers — only add one site block to the
+# shared Caddy.
+#
+#   docker compose up -d --build      # start / rebuild
+#   docker compose logs -f api        # tail logs
+#   docker compose down               # stop (keeps the o2_pgdata + o2_uploads volumes)
+#
+# Set PROXY_NETWORK in .env to avora's Caddy network (verify per DEPLOY.md).
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: project-o2-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: o2_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: projecto2
+    volumes:
+      # Postgres 18 images store data in a version-specific subdir, so the volume
+      # must mount at /var/lib/postgresql (NOT /var/lib/postgresql/data).
+      - o2_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U o2_admin -d projecto2"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  api:
+    build: .
+    container_name: project-o2-api
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - o2_uploads:/app/uploads
+    expose:
+      - "8000"            # internal only; the shared Caddy reaches it by name
+    networks:
+      - internal          # to reach the db service
+      - proxy             # so avora's Caddy can reach this container
+
+networks:
+  internal:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-deploy_default}
+
+volumes:
+  o2_pgdata:
+  o2_uploads:

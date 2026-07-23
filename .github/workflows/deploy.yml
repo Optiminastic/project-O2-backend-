@@ -1,0 +1,69 @@
+name: Deploy
+
+# CI/CD for project-O2-backend on the shared Hetzner VPS.
+# On push to main: build + smoke-test the image, then SSH into the VPS as the
+# `deploy` user and roll the stack forward (git sync + docker compose up --build).
+# Secrets required (Settings > Secrets and variables > Actions):
+#   SSH_HOST  -> 65.21.186.55
+#   SSH_USER  -> deploy
+#   SSH_KEY   -> the PRIVATE half of the dedicated deploy keypair
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import smoke test
+        # Fails the build if the app can't be imported (syntax / import errors).
+        # No DB connection happens at import time (create_all runs in lifespan).
+        run: python -c "import app.main; print('app imports OK')"
+
+      - name: Build image
+        run: docker build -t project-o2-api:ci .
+
+  deploy:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            cd /opt/project-o2
+            echo "== syncing to origin/main =="
+            git fetch --prune origin
+            git reset --hard origin/main
+            echo "== building + starting =="
+            docker compose up -d --build
+            echo "== waiting for health =="
+            for i in $(seq 1 30); do
+              if docker compose exec -T api curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+                echo "healthy"; break
+              fi
+              [ "$i" = "30" ] && { echo "health check failed"; docker compose logs --tail=50 api; exit 1; }
+              sleep 3
+            done
+            docker compose ps
+            docker image prune -f >/dev/null 2>&1 || true

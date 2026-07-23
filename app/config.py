@@ -16,6 +16,16 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:3000"
     upload_dir: str = "./uploads"
 
+    # Object storage (Amazon S3). If aws_s3_bucket is set, uploads are written to
+    # s3://<bucket>/<prefix> and downloads are served via presigned URLs;
+    # otherwise files are written to upload_dir on local disk. Credentials fall
+    # back to the standard AWS chain when the explicit keys are left blank.
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "ap-south-1"
+    aws_s3_bucket: str = ""
+    aws_s3_prefix: str = "o2/"
+
     app_name: str = "Project O2 API"
     api_v1_prefix: str = "/api"
 
@@ -33,6 +43,12 @@ class Settings(BaseSettings):
     smtp_reply_to: str = ""
     smtp_use_tls: bool = True
     invite_expire_hours: int = 168  # 7 days
+
+    # GST verification (Appyflow). When gst_api_key is blank the /gst endpoint
+    # still validates the number and derives PAN + state offline; the legal /
+    # trade name and registered address are only fetched when a key is present.
+    gst_api_key: str = ""
+    gst_api_url: str = "https://appyflow.in/api/verifyGST"
 
     @field_validator("database_url", mode="after")
     @classmethod

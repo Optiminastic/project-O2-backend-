@@ -166,6 +166,29 @@ class AuditLogOut(BaseModel):
     created_at: datetime
 
 
+# ---------- GST lookup ----------
+class GstLookupOut(BaseModel):
+    """Result of verifying/looking up a GSTIN.
+
+    `valid` reflects the format + checksum check (always computed offline).
+    `pan` and `state` are derived from the number itself. `legal_name`,
+    `trade_name` and `address` are only populated when a live provider key is
+    configured and the lookup succeeds. `source` is "appyflow" or "offline".
+    """
+
+    gstin: str
+    valid: bool
+    pan: str | None = None
+    state: str | None = None
+    state_code: str | None = None
+    legal_name: str | None = None
+    trade_name: str | None = None
+    address: str | None = None
+    status: str | None = None  # registration status, e.g. "Active"
+    source: str = "offline"
+    message: str | None = None
+
+
 # ---------- Dashboard ----------
 class CashflowPoint(BaseModel):
     """One bucket of real received revenue (a week / month / year)."""
