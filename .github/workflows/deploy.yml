@@ -3,10 +3,13 @@ name: Deploy
 # CI/CD for project-O2-backend on the shared Hetzner VPS.
 # On push to main: build + smoke-test the image, then SSH into the VPS as the
 # `deploy` user and roll the stack forward (git sync + docker compose up --build).
+#
 # Secrets required (Settings > Secrets and variables > Actions):
-#   SSH_HOST  -> 65.21.186.55
-#   SSH_USER  -> deploy
-#   SSH_KEY   -> the PRIVATE half of the dedicated deploy keypair
+#   SSH_HOST     -> 65.21.186.55
+#   SSH_USER     -> deploy
+#   SSH_KEY_B64  -> base64 of the private deploy key (single line; no newlines to
+#                   mangle). Generate on Windows PowerShell with:
+#     [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\Users\mrido\o2_ci_deploy")) | Set-Clipboard
 on:
   push:
     branches: [main]
@@ -43,27 +46,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          command_timeout: 15m
-          script: |
-            set -euo pipefail
-            cd /opt/project-o2
-            echo "== syncing to origin/main =="
-            git fetch --prune origin
-            git reset --hard origin/main
-            echo "== building + starting =="
-            docker compose up -d --build
-            echo "== waiting for health =="
-            for i in $(seq 1 30); do
-              if docker compose exec -T api curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
-                echo "healthy"; break
-              fi
-              [ "$i" = "30" ] && { echo "health check failed"; docker compose logs --tail=50 api; exit 1; }
-              sleep 3
-            done
-            docker compose ps
-            docker image prune -f >/dev/null 2>&1 || true
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s' "$SSH_KEY_B64" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" 'bash -se' <<'REMOTE'
+          cd /opt/project-o2
+          echo "== syncing to origin/main =="
+          git fetch --prune origin
+          git reset --hard origin/main
+          echo "== building + starting =="
+          docker compose up -d --build
+          echo "== waiting for health =="
+          for i in $(seq 1 30); do
+            if docker compose exec -T api curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+              echo "healthy"; break
+            fi
+            [ "$i" = "30" ] && { echo "health check failed"; docker compose logs --tail=50 api; exit 1; }
+            sleep 3
+          done
+          docker compose ps
+          docker image prune -f >/dev/null 2>&1 || true
+          REMOTE
