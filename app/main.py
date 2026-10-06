@@ -21,6 +21,7 @@ from app.routers import (
     audit,
     dashboard,
     gst,
+    admin,
 )
 
 
@@ -66,7 +67,7 @@ app.add_middleware(
 )
 
 api = settings.api_v1_prefix
-for r in (auth, team, dashboard, agents, clients, invoices, vendors, taxation, reports, approvals, verification, audit, gst):
+for r in (auth, team, dashboard, agents, clients, invoices, vendors, taxation, reports, approvals, verification, audit, gst, admin):
     app.include_router(r.router, prefix=api)
 
 

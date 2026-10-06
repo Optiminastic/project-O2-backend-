@@ -11,8 +11,11 @@ WORKDIR /app
 
 # curl is used by the container HEALTHCHECK. psycopg[binary] ships its own libpq
 # wheel, so no build toolchain is needed.
+# postgresql-client provides pg_dump/pg_restore for app/services/backup.py.
+# The erase endpoint refuses to run without a verified dump, so this is a
+# hard dependency of that feature, not a convenience.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies first for better layer caching.
