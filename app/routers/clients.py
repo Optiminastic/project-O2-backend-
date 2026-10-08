@@ -7,6 +7,7 @@ from app.core.deps import get_current_user, require_roles
 from app.models import Client, User, UserRole
 from app.schemas.client import ClientCreate, ClientUpdate, ClientOut
 from app.services.audit import log_action
+from app.services.agents import resolve_agent_id
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
@@ -32,7 +33,9 @@ def create_client(
         require_roles(UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER, UserRole.FINANCE_EXECUTIVE)
     ),
 ):
-    client = Client(**payload.model_dump())
+    data = payload.model_dump()
+    data["agent_id"] = resolve_agent_id(db, data.get("agent_id"))
+    client = Client(**data)
     db.add(client)
     db.flush()
     log_action(db, user, "Created client", "Client", client.id, client.business_name)
@@ -59,7 +62,10 @@ def update_client(
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "agent_id" in changes:
+        changes["agent_id"] = resolve_agent_id(db, changes["agent_id"])
+    for k, v in changes.items():
         setattr(client, k, v)
     log_action(db, user, "Updated client", "Client", client.id)
     db.commit()

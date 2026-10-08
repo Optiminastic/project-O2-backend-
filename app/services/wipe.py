@@ -29,6 +29,7 @@ from app.database import Base
 from app.models.enums import UserRole
 from app.models.user import User
 from app.services import backup as backup_svc
+from app.services.agents import ensure_house_agent
 from app.services.audit import log_action
 
 logger = logging.getLogger("o2.wipe")
@@ -48,8 +49,13 @@ DELETE_ORDER: tuple[str, ...] = (
     "vendor_reports",
     "vendor_invoices",
     "payments",
+    "invoice_links",
+    "project_vendors",
+    "projects",
     "vendor_allocations",
+    "vendor_bank_accounts",
     "client_invoices",
+    "services",
     "bank_statements",
     "vendors",
     "clients",
@@ -66,7 +72,12 @@ DELETE_ORDER: tuple[str, ...] = (
 #
 #   audit_logs  services/audit.py writes nowhere else, so clearing this table
 #               would erase the record that the erase happened.
-RETAINED: tuple[str, ...] = ("users", "audit_logs")
+#
+#   document_sequences
+#               Holds the last GST invoice number issued per financial year.
+#               Resetting it would re-issue numbers already sent to clients,
+#               breaking the unique, consecutive series GST Rule 46 requires.
+RETAINED: tuple[str, ...] = ("users", "audit_logs", "document_sequences")
 
 # Arbitrary but fixed: two concurrent wipes must not interleave their deletes.
 _ADVISORY_LOCK_KEY = 8_142_003_991
@@ -182,6 +193,9 @@ def erase_all(
         # on PDFs that clients have received.
         result = db.execute(text(f"DELETE FROM {table}"))
         deleted[table] = result.rowcount or 0
+
+    # Clients cannot exist without an agent, so the in-house default comes straight back.
+    ensure_house_agent(db)
 
     log_action(
         db,

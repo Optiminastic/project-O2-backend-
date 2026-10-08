@@ -1,4 +1,4 @@
-from sqlalchemy import String, Text, Float, Boolean
+from sqlalchemy import Boolean, Float, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -13,6 +13,9 @@ class Agent(Base, TimestampMixin):
     """
 
     __tablename__ = "agents"
+    __table_args__ = (
+        Index("uq_agents_house", "is_house", unique=True, postgresql_where=text("is_house")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     business_name: Mapped[str] = mapped_column(String(200), index=True)
@@ -33,10 +36,14 @@ class Agent(Base, TimestampMixin):
 
     commission_rate: Mapped[float] = mapped_column(Float, default=0.0)  # percent of invoiced value
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The single in-house agent ("Opti"): credited when a client came in directly.
+    # Always active, never deleted, and never earns commission.
+    is_house: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Deleting an agent clears the link on clients/invoices (FK is nullable, ON DELETE SET NULL)
-    # rather than cascading the delete — the business records must survive.
+    # Every client and invoice has an agent. Deleting an agent first moves its
+    # clients and proformas to the house agent (see routers/agents.py), so the
+    # FK's legacy ON DELETE SET NULL never fires.
     clients: Mapped[list["Client"]] = relationship(  # noqa: F821
         back_populates="agent", passive_deletes=True
     )

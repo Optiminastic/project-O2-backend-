@@ -47,4 +47,15 @@ class AgentOut(AgentBase):
 
     id: int
     is_active: bool
+    is_house: bool
     created_at: datetime
+
+
+class AgentOption(BaseModel):
+    """Names-only view for picking an agent; no commission or bank details."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    business_name: str
+    is_house: bool

@@ -21,12 +21,11 @@ class Client(Base, TimestampMixin):
     category: Mapped[str | None] = mapped_column(String(80), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # The referral agent who introduced this client (optional).
-    agent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
-    )
+    # The referral agent who introduced this client. Mandatory: direct clients
+    # belong to the in-house agent "Opti" (no commission).
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL"))
 
-    agent: Mapped["Agent | None"] = relationship(back_populates="clients")  # noqa: F821
+    agent: Mapped["Agent"] = relationship(back_populates="clients")  # noqa: F821
     invoices: Mapped[list["ClientInvoice"]] = relationship(  # noqa: F821
         back_populates="client", cascade="all, delete-orphan"
     )

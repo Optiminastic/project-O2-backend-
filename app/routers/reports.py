@@ -8,6 +8,7 @@ from app.core.deps import get_current_user, require_roles
 from app.models import VendorReport, EmailLog, Client, User, UserRole, ReportReviewStatus
 from app.schemas.misc import ReportCreate, ReportOut, EmailReportRequest, EmailLogOut
 from app.services.audit import log_action
+from app.core.period import Period, month_period
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -15,8 +16,15 @@ MANAGER_ROLES = (UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER)
 
 
 @router.get("", response_model=list[ReportOut])
-def list_reports(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(VendorReport).order_by(VendorReport.created_at.desc()).all()
+def list_reports(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = db.query(VendorReport)
+    if period:
+        q = q.filter(period.timestamps(VendorReport.created_at))
+    return q.order_by(VendorReport.created_at.desc()).all()
 
 
 @router.post("", response_model=ReportOut, status_code=201)

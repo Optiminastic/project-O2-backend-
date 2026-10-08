@@ -5,6 +5,8 @@ Mirror of the frontend `lib/rbac.ts`.
 
     Module        CEO  CFO  Mgr  Exec
     Agents         ✓    ✓    ✓    –
+    Services       ✓    ✓    ✓    –   (edit; every role lists active services)
+    Projects       ✓    ✓    ✓    –   (edit and send work orders; every role views)
     Taxation       ✓    ✓    ✓    –
     Approvals      ✓    ✓    ✓    –
     Audit Trail    ✓    –    –    –

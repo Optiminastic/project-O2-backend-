@@ -1,12 +1,25 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.core.deps import require_roles
 from app.core.rbac import NON_EXEC
-from app.models import ClientInvoice, VendorInvoice, Payment, User, GstStatus
+from app.models import ClientInvoice, VendorInvoice, Payment, User
 from app.schemas.misc import PaymentReceiptOut
+from app.schemas.taxation import (
+    CertificateIn,
+    ClientTdsRow,
+    DepositIn,
+    PurchaseGstRow,
+    SalesGstRow,
+    TaxSummary,
+    VendorTdsRow,
+)
+from app.services import tax_registers as registers
+from app.services.audit import log_action
+from app.services.numbering import business_date
 from app.services.taxation import compute_gst, compute_tds
+from app.core.period import Period, month_period
 
 router = APIRouter(prefix="/taxation", tags=["taxation"])
 
@@ -23,40 +36,105 @@ def tds_preview(base_amount: float, tds_rate: float, applicable: bool = True, us
     return {"tds_amount": compute_tds(base_amount, tds_rate, applicable)}
 
 
-@router.get("/summary")
-def taxation_summary(db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
-    """GST + TDS pendency overview across all invoices."""
-    client_invoices = db.query(ClientInvoice).all()
-    vendor_invoices = db.query(VendorInvoice).all()
+@router.get("/summary", response_model=TaxSummary)
+def taxation_summary(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """The month's tax position: GST to pay after input credit, and TDS on both sides."""
+    return registers.tax_summary(db, period)
 
-    gst_by_status: dict[str, float] = {s.value: 0.0 for s in GstStatus}
-    gst_collected = 0.0
-    for inv in client_invoices:
-        gst_by_status[inv.gst_status.value] = round(gst_by_status.get(inv.gst_status.value, 0.0) + inv.gst_amount, 2)
-        gst_collected += inv.gst_amount
 
-    client_tds_expected = round(sum(i.expected_tds for i in client_invoices), 2)
-    vendor_tds_total = round(sum(i.tds_amount for i in vendor_invoices), 2)
+@router.get("/gst/sales", response_model=list[SalesGstRow])
+def gst_sales(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    return registers.sales_register(db, period)
 
-    return {
-        "gst_by_status": gst_by_status,
-        "gst_total": round(gst_collected, 2),
-        "client_tds_receivable": client_tds_expected,
-        "vendor_tds_payable": vendor_tds_total,
-        "client_invoice_count": len(client_invoices),
-        "vendor_invoice_count": len(vendor_invoices),
-    }
+
+@router.get("/gst/purchases", response_model=list[PurchaseGstRow])
+def gst_purchases(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    return registers.purchase_register(db, period)
+
+
+@router.get("/tds/clients", response_model=list[ClientTdsRow])
+def tds_by_clients(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    return registers.client_tds_register(db, period)
+
+
+@router.get("/tds/vendors", response_model=list[VendorTdsRow])
+def tds_on_vendors(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    return registers.vendor_tds_register(db, period)
+
+
+@router.patch("/client-tds/{payment_id}/certificate", response_model=ClientTdsRow)
+def record_tds_certificate(
+    payment_id: int,
+    payload: CertificateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """Record (or clear) the client's Form 16A for the TDS deducted from this payment."""
+    payment = db.get(Payment, payment_id)
+    if not payment or payment.tds_deducted <= 0:
+        raise HTTPException(404, "No TDS was deducted from this payment")
+    payment.tds_certificate_number = payload.certificate_number
+    payment.tds_certificate_date = payload.certificate_date
+    action = "Recorded TDS certificate" if payload.certificate_number else "Cleared TDS certificate"
+    log_action(db, user, action, "ClientInvoice", payment.invoice_id, payload.certificate_number)
+    db.commit()
+    return registers.client_tds_row(payment)
+
+
+@router.patch("/vendor-tds/{vendor_invoice_id}/deposit", response_model=VendorTdsRow)
+def record_tds_deposit(
+    vendor_invoice_id: int,
+    payload: DepositIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """Record (or clear) the deposit of TDS deducted from a vendor bill."""
+    bill = db.get(VendorInvoice, vendor_invoice_id)
+    if not bill or bill.tds_amount <= 0:
+        raise HTTPException(404, "No TDS was deducted from this bill")
+    if payload.deposited_on and payload.deposited_on > business_date():
+        raise HTTPException(400, "The deposit date cannot be in the future.")
+    if payload.deposited_on and payload.deposited_on < bill.invoice_date:
+        raise HTTPException(400, "The deposit date is before the bill date.")
+    bill.tds_deposited_on = payload.deposited_on
+    bill.tds_challan_number = payload.challan_number
+    action = "Recorded TDS deposit" if payload.challan_number else "Cleared TDS deposit"
+    log_action(db, user, action, "VendorInvoice", bill.id, payload.challan_number)
+    db.commit()
+    return registers.vendor_tds_row(bill)
 
 
 @router.get("/receipts", response_model=list[PaymentReceiptOut])
-def receipts(db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
-    """Ledger of every client payment received, newest first."""
-    rows = (
-        db.query(Payment)
-        .join(ClientInvoice, Payment.invoice_id == ClientInvoice.id)
-        .order_by(Payment.payment_date.desc(), Payment.id.desc())
-        .all()
-    )
+def receipts(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """Ledger of client payments received (by payment date), newest first."""
+    q = db.query(Payment).join(ClientInvoice, Payment.invoice_id == ClientInvoice.id)
+    if period:
+        q = q.filter(period.dates(Payment.payment_date))
+    rows = q.order_by(Payment.payment_date.desc(), Payment.id.desc()).all()
     return [
         PaymentReceiptOut(
             id=p.id,
@@ -66,31 +144,11 @@ def receipts(db: Session = Depends(get_db), user: User = Depends(require_roles(*
             amount=p.amount,
             payment_date=p.payment_date,
             payment_mode=p.payment_mode,
+            bank_name=p.bank_name,
             bank_reference=p.bank_reference,
             tds_deducted=p.tds_deducted,
             gst_component=p.gst_component,
             remarks=p.remarks,
         )
         for p in rows
-    ]
-
-
-@router.get("/gst/pending")
-def gst_pending(db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
-    """Invoices whose GST is not yet reconciled."""
-    rows = (
-        db.query(ClientInvoice)
-        .filter(ClientInvoice.gst_status != GstStatus.RECONCILED)
-        .order_by(ClientInvoice.invoice_date.desc())
-        .all()
-    )
-    return [
-        {
-            "id": r.id,
-            "invoice_number": r.invoice_number,
-            "taxable_value": r.taxable_value,
-            "gst_amount": r.gst_amount,
-            "gst_status": r.gst_status.value,
-        }
-        for r in rows
     ]

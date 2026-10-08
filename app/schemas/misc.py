@@ -112,6 +112,7 @@ class PaymentReceiptOut(BaseModel):
     amount: float
     payment_date: date
     payment_mode: PaymentMode
+    bank_name: str | None
     bank_reference: str | None
     tds_deducted: float
     gst_component: float
@@ -204,7 +205,7 @@ class DashboardSummary(BaseModel):
     net_receivable: float
     net_payable: float
     pending_approvals: int
-    gst_pending: float
+    gst_payable: float  # output GST less input credit, never negative
     reconciliation_rate: float
     recent_invoices: list[dict]
     approvals_queue: list[dict]

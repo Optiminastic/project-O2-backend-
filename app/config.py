@@ -44,6 +44,23 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     invite_expire_hours: int = 168  # 7 days
 
+    # Supplier details printed on every proforma and tax invoice. A GST tax
+    # invoice is invalid without the supplier's legal name and GSTIN, so issuing
+    # is refused until both are set.
+    company_legal_name: str = ""
+    company_address: str = ""
+    company_gstin: str = ""
+    company_state: str = ""
+    company_pan: str = ""
+    company_email: str = ""
+    company_bank_name: str = ""
+    company_bank_account: str = ""
+    company_bank_ifsc: str = ""
+
+    # Client-facing invoice links (/i/<token>).
+    invoice_approval_link_days: int = 30
+    invoice_view_link_days: int = 365
+
     # GST verification (Appyflow). When gst_api_key is blank the /gst endpoint
     # still validates the number and derives PAN + state offline; the legal /
     # trade name and registered address are only fetched when a key is present.

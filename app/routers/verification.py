@@ -17,6 +17,7 @@ from app.schemas.misc import BankStatementOut, BankStatementDetail, BankTransact
 from app.services.reconciliation import parse_statement, auto_match
 from app.services import storage
 from app.services.audit import log_action
+from app.core.period import Period, month_period
 
 router = APIRouter(prefix="/verification", tags=["verification"])
 
@@ -24,8 +25,15 @@ MANAGER_ROLES = (UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER)
 
 
 @router.get("/statements", response_model=list[BankStatementOut])
-def list_statements(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(BankStatement).order_by(BankStatement.created_at.desc()).all()
+def list_statements(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = db.query(BankStatement)
+    if period:
+        q = q.filter(period.timestamps(BankStatement.created_at))
+    return q.order_by(BankStatement.created_at.desc()).all()
 
 
 @router.get("/statements/{statement_id}", response_model=BankStatementDetail)

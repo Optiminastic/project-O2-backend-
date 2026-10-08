@@ -15,7 +15,12 @@ class InvitationStatus(str, Enum):
 
 
 class InvoiceStatus(str, Enum):
+    # Proforma stages. DRAFT is the editable proforma; no GST liability exists yet.
     DRAFT = "Draft"
+    AWAITING_CLIENT = "Awaiting Client"
+    CHANGES_REQUESTED = "Changes Requested"
+    CLIENT_APPROVED = "Client Approved"
+    # Issued tax invoice stages. SENT is the status at the moment of issue.
     SENT = "Sent"
     PENDING = "Pending"
     PARTIALLY_PAID = "Partially Paid"
@@ -26,7 +31,30 @@ class InvoiceStatus(str, Enum):
     RECONCILED = "Reconciled"
 
 
+PROFORMA_STAGES = frozenset(
+    {
+        InvoiceStatus.DRAFT,
+        InvoiceStatus.AWAITING_CLIENT,
+        InvoiceStatus.CHANGES_REQUESTED,
+        InvoiceStatus.CLIENT_APPROVED,
+    }
+)
+
+
+class InvoiceLinkPurpose(str, Enum):
+    APPROVE = "approve"  # client reviews a proforma and approves or asks for changes
+    VIEW = "view"  # client views an issued tax invoice
+
+
+class ClientApprovalMethod(str, Enum):
+    LINK = "link"
+    MANUAL = "manual"
+
+
 class PaymentMode(str, Enum):
+    # Client payments are always received by bank. The other modes remain only
+    # so payments recorded before this rule still load.
+    BANK = "Bank"
     NEFT = "NEFT"
     RTGS = "RTGS"
     IMPS = "IMPS"

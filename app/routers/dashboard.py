@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -17,9 +18,11 @@ from app.models import (
     User,
     ApprovalStatus,
     VerificationStatus,
-    GstStatus,
+    PROFORMA_STAGES,
 )
 from app.schemas.misc import DashboardSummary, CashflowPoint
+from app.core.period import Period, month_period
+from app.services import tax_registers
 
 _MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
@@ -80,17 +83,31 @@ def revenue(
 
 
 @router.get("/summary", response_model=DashboardSummary)
-def summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    invoices = db.query(ClientInvoice).all()
-    approvals = db.query(PaymentApproval).all()
-    vendor_invoices = db.query(VendorInvoice).all()
-    txns = db.query(BankTransaction).all()
+def summary(
+    period: Period | None = Depends(month_period),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    invoice_q = db.query(ClientInvoice)
+    approval_q = db.query(PaymentApproval)
+    vendor_q = db.query(VendorInvoice)
+    txn_q = db.query(BankTransaction)
+    if period:
+        invoice_q = invoice_q.filter(period.dates(func.coalesce(ClientInvoice.invoice_date, ClientInvoice.proforma_date)))
+        approval_q = approval_q.filter(period.timestamps(PaymentApproval.created_at))
+        vendor_q = vendor_q.filter(period.dates(VendorInvoice.invoice_date))
+        txn_q = txn_q.filter(period.dates(BankTransaction.txn_date))
+    all_invoices = invoice_q.all()
+    # Proformas carry no receivable and no GST liability until issued.
+    invoices = [i for i in all_invoices if i.status not in PROFORMA_STAGES]
+    approvals = approval_q.all()
+    vendor_invoices = vendor_q.all()
+    txns = txn_q.all()
 
     net_receivable = round(sum(i.amount_pending for i in invoices), 2)
     net_payable = round(sum(vi.net_payable for vi in vendor_invoices), 2)
-    gst_pending = round(
-        sum(i.gst_amount for i in invoices if i.gst_status != GstStatus.RECONCILED), 2
-    )
+    # GST to pay for the period after input credit, the same figure the Taxation page shows.
+    gst = tax_registers.tax_summary(db, period)
     pending_approvals = sum(1 for a in approvals if a.status in PENDING_APPROVAL_STATES)
 
     reconciled = sum(1 for t in txns if t.verification_status == VerificationStatus.RECONCILED)
@@ -102,11 +119,11 @@ def summary(db: Session = Depends(get_db), user: User = Depends(get_current_user
     )
     reconciliation_rate = round((matched / len(txns) * 100.0), 2) if txns else 0.0
 
-    recent = sorted(invoices, key=lambda i: i.created_at, reverse=True)[:6]
+    recent = sorted(all_invoices, key=lambda i: i.created_at, reverse=True)[:6]
     recent_invoices = [
         {
             "id": i.id,
-            "invoice_number": i.invoice_number,
+            "invoice_number": i.display_number,
             "client_id": i.client_id,
             "total_amount": i.total_amount,
             "amount_pending": i.amount_pending,
@@ -148,7 +165,7 @@ def summary(db: Session = Depends(get_db), user: User = Depends(get_current_user
         net_receivable=net_receivable,
         net_payable=net_payable,
         pending_approvals=pending_approvals,
-        gst_pending=gst_pending,
+        gst_payable=gst.net_gst_payable,
         reconciliation_rate=reconciliation_rate,
         recent_invoices=recent_invoices,
         approvals_queue=approvals_queue,

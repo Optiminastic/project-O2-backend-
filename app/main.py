@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import Base, engine
+from app import schema_upgrades
 import app.models  # noqa: F401  (register models on Base)
 from app.routers import (
     auth,
@@ -22,6 +23,9 @@ from app.routers import (
     dashboard,
     gst,
     admin,
+    public_invoices,
+    services,
+    projects,
 )
 
 
@@ -30,6 +34,7 @@ async def lifespan(app: FastAPI):
     # Ensure tables exist (Alembic is the source of truth in production; this is a
     # convenience for first run / SQLite dev).
     Base.metadata.create_all(bind=engine)
+    schema_upgrades.apply(engine)
     # Lightweight additive migrations. create_all() only creates missing *tables*,
     # never new columns on existing ones, and this project has no Alembic yet — so
     # apply idempotent ADD COLUMNs here. Safe to run on every startup.
@@ -67,7 +72,10 @@ app.add_middleware(
 )
 
 api = settings.api_v1_prefix
-for r in (auth, team, dashboard, agents, clients, invoices, vendors, taxation, reports, approvals, verification, audit, gst, admin):
+for r in (
+    auth, team, dashboard, agents, clients, invoices, vendors, taxation, reports,
+    approvals, verification, audit, gst, admin, public_invoices, services, projects,
+):
     app.include_router(r.router, prefix=api)
 
 

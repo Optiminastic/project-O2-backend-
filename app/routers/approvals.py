@@ -8,6 +8,7 @@ from app.models import PaymentApproval, User, UserRole, ApprovalStatus
 from app.schemas.misc import ApprovalCreate, ApprovalOut, ApprovalDetail, ApprovalDecision, PaymentRelease
 from app.services import approval as approval_svc
 from app.services.audit import log_action
+from app.core.period import Period, month_period
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -15,10 +16,13 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 @router.get("", response_model=list[ApprovalOut])
 def list_approvals(
     status: ApprovalStatus | None = None,
+    period: Period | None = Depends(month_period),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*NON_EXEC)),
 ):
     q = db.query(PaymentApproval)
+    if period:
+        q = q.filter(period.timestamps(PaymentApproval.created_at))
     if status:
         q = q.filter(PaymentApproval.status == status)
     return q.order_by(PaymentApproval.created_at.desc()).all()
