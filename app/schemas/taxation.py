@@ -1,9 +1,11 @@
 from datetime import date
 from typing import Annotated
 
-from pydantic import BaseModel, StringConstraints, model_validator
+from pydantic import BaseModel, BeforeValidator, model_validator
 
-Reference = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+from app.schemas.fields import PastDate, TaxDocumentNumber, blank_to_none
+
+Reference = Annotated[TaxDocumentNumber | None, BeforeValidator(blank_to_none)]
 
 
 class GstTotals(BaseModel):
@@ -45,6 +47,12 @@ class SalesGstRow(BaseModel):
     igst: float
     gst_amount: float
     total_amount: float
+    # What the client has settled (cash plus TDS) and what is still due, each
+    # split into principal (taxable value) and GST in the invoice's own ratio.
+    paid_principal: float
+    paid_gst: float
+    pending_principal: float
+    pending_gst: float
 
 
 class PurchaseGstRow(BaseModel):
@@ -96,8 +104,8 @@ def _both_or_neither(number: str | None, day: date | None, what: str) -> None:
 
 
 class CertificateIn(BaseModel):
-    certificate_number: Reference | None = None
-    certificate_date: date | None = None
+    certificate_number: Reference = None
+    certificate_date: PastDate | None = None
 
     @model_validator(mode="after")
     def _complete(self):
@@ -106,8 +114,8 @@ class CertificateIn(BaseModel):
 
 
 class DepositIn(BaseModel):
-    challan_number: Reference | None = None
-    deposited_on: date | None = None
+    challan_number: Reference = None
+    deposited_on: PastDate | None = None
 
     @model_validator(mode="after")
     def _complete(self):

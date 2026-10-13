@@ -17,7 +17,6 @@ from app.schemas.taxation import (
 )
 from app.services import tax_registers as registers
 from app.services.audit import log_action
-from app.services.numbering import business_date
 from app.services.taxation import compute_gst, compute_tds
 from app.core.period import Period, month_period
 
@@ -112,8 +111,6 @@ def record_tds_deposit(
     bill = db.get(VendorInvoice, vendor_invoice_id)
     if not bill or bill.tds_amount <= 0:
         raise HTTPException(404, "No TDS was deducted from this bill")
-    if payload.deposited_on and payload.deposited_on > business_date():
-        raise HTTPException(400, "The deposit date cannot be in the future.")
     if payload.deposited_on and payload.deposited_on < bill.invoice_date:
         raise HTTPException(400, "The deposit date is before the bill date.")
     bill.tds_deposited_on = payload.deposited_on

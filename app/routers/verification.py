@@ -2,6 +2,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -13,6 +14,7 @@ from app.models import (
     UserRole,
     VerificationStatus,
 )
+from app.schemas.fields import OptionalAccountNumber, OptionalName
 from app.schemas.misc import BankStatementOut, BankStatementDetail, BankTransactionOut
 from app.services.reconciliation import parse_statement, auto_match
 from app.services import storage
@@ -67,6 +69,18 @@ def download_statement(
     raise HTTPException(404, "Statement file is no longer available")
 
 
+_BANK_NAME = TypeAdapter(OptionalName)
+_ACCOUNT_NUMBER = TypeAdapter(OptionalAccountNumber)
+
+
+def _form_field(adapter: TypeAdapter, value: str | None, label: str) -> str | None:
+    """Form fields skip the JSON schemas, so they get the same checks here."""
+    try:
+        return adapter.validate_python(value)
+    except ValidationError as exc:
+        raise HTTPException(422, f"{label}: {exc.errors()[0]['msg'].removeprefix('Value error, ')}") from exc
+
+
 @router.post("/statements", response_model=BankStatementDetail, status_code=201)
 async def upload_statement(
     file: UploadFile = File(...),
@@ -76,6 +90,8 @@ async def upload_statement(
     user: User = Depends(require_roles(*MANAGER_ROLES, UserRole.FINANCE_EXECUTIVE)),
 ):
     """Upload a bank statement (CSV/Excel/PDF), parse it and auto-match transactions."""
+    bank_name = _form_field(_BANK_NAME, bank_name, "Bank name")
+    account_number = _form_field(_ACCOUNT_NUMBER, account_number, "Account number")
     content = await file.read()
 
     # Persist the original file (S3 when configured, else local disk) and keep the

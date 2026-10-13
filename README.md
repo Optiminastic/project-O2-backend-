@@ -32,13 +32,30 @@ Every client and every invoice is credited to an agent.
 - TDS always applies to client invoices (no on/off switch). The default rate is 10%, what clients deduct on professional fees under section 194J; it can be changed per invoice.
 - Each referral agent's page has **Download MOU (PDF)**: a one-page Memorandum of Understanding with the agent's commission %, when commission is earned and paid, TDS on commission (section 194H, 2%), bank details and signature blocks. Not offered for the in-house agent. Needs `COMPANY_LEGAL_NAME`. Code: `app/services/agent_mou.py` (reportlab).
 
-## Client payments
+## Client receipts
 
-Client payments are always received by bank: the mode is recorded as `Bank` and the bank name (the account the money came into) is required, with the UTR as reference. Payments recorded earlier keep their old mode (NEFT, UPI, etc.).
+Client receipts (stored as `payments`, `POST /api/invoices/{id}/payments`) are always received by bank: the mode is recorded as `Bank` and the bank name (the account the money came into) is required, with the UTR as reference. Payments recorded earlier keep their old mode (NEFT, UPI, etc.).
+
+## Input rules
+
+Every request schema uses the shared finance field types in `app/schemas/fields.py`; the identifier formats live in `app/services/identifiers.py`.
+A bad value returns 422 with a plain message per field.
+
+- GSTIN: 15 characters, a real state code and a matching check character. PAN: 10 characters with a valid holder type; when a GSTIN is also given, the PAN must be the one inside it.
+- IFSC (4 letters, 0, 6 characters), account number (9 to 18 digits), Udyam number, CIN or LLPIN, SAC (6 digits starting 99).
+- Phone: Indian mobile, landline with STD code, or +country code. Spaces and dashes are removed before saving.
+- Vendor bill numbers follow GST rule 46: up to 16 letters, digits, `-` or `/`. Bank references (UTR, RRN, cheque) are 6 to 22 letters or digits; challan and Form 16A numbers 5 to 20.
+- Amounts are rupees with at most 2 decimals, never negative, at most ₹10,000 crore; invoice values, receipts and payment requests must be above zero.
+- GST rate must be a slab (0, 5, 12, 18, 28, 40). TDS rate is 0 to 20%.
+- Dates: receipts, vendor bills, certificates and deposits cannot be in the future or before 1 July 2017; a receipt cannot predate its invoice; a new invoice's due date cannot be in the past; end dates cannot precede start dates.
+- Rejecting a payment needs a reason.
+- Identifiers are trimmed and upper-cased. Response schemas stay lenient, so records saved before these rules still load; they must be corrected when next edited.
+
+The portal mirrors these rules on its inputs (`frontend/lib/validation.ts`) so typos are caught while typing.
 
 ## Month filter
 
-Taxation (CEO/CFO/Finance Manager, `?month=`): `GET /api/taxation/summary`, `GET /api/taxation/gst/sales`, `GET /api/taxation/gst/purchases`, `GET /api/taxation/tds/clients`, `GET /api/taxation/tds/vendors`, `PATCH /api/taxation/client-tds/{payment_id}/certificate`, `PATCH /api/taxation/vendor-tds/{vendor_invoice_id}/deposit`. Vendor bills take `gst_rate` (0/5/12/18/28), `is_interstate` and `tds_section`.
+Taxation (CEO/CFO/Finance Manager, `?month=`): `GET /api/taxation/summary`, `GET /api/taxation/gst/sales`, `GET /api/taxation/gst/purchases`, `GET /api/taxation/tds/clients`, `GET /api/taxation/tds/vendors`, `PATCH /api/taxation/client-tds/{payment_id}/certificate`, `PATCH /api/taxation/vendor-tds/{vendor_invoice_id}/deposit`. Vendor bills take `gst_rate` (0/5/12/18/28/40), `is_interstate` and `tds_section`.
 
 Projects: `GET/POST /api/projects` (`?month=` shows projects running that month), `GET/PATCH/DELETE /api/projects/{id}` (delete refused once vendors have invoiced it), `GET /api/projects/{id}/vendors/{vendor_id}/work-order.pdf` (first download assigns the WO number), `POST .../work-order/send` (emails the PDF; `emailed: false` when SMTP is not set up). Vendor invoices take an optional `project_id`.
 

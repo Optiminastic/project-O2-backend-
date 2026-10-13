@@ -1,52 +1,37 @@
 from datetime import date, datetime
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, EmailStr, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, EmailStr, model_validator
 
 from app.models.enums import VendorApprovalStatus, AllocationStatus, InvoiceStatus
-from app.services.taxation import DEFAULT_VENDOR_TDS_SECTION, TDS_SECTIONS, VENDOR_GST_RATES
-
-PAN_PATTERN = r"^[A-Z]{5}[0-9]{4}[A-Z]$"
-UDYAM_PATTERN = r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$"
-IFSC_PATTERN = r"^[A-Z]{4}0[A-Z0-9]{6}$"
-ACCOUNT_NUMBER_PATTERN = r"^[0-9]{9,18}$"
-
-
-def _blank_to_none(value: object) -> object:
-    if isinstance(value, str) and not value.strip():
-        return None
-    return value
-
-
-def _normalize_code(value: object) -> object:
-    """Identifiers are typed by people: trim and upper-case them before the format check."""
-    value = _blank_to_none(value)
-    return value.strip().upper() if isinstance(value, str) else value
-
-
-def _code(pattern: str, max_length: int):
-    return Annotated[
-        str,
-        BeforeValidator(_normalize_code),
-        StringConstraints(pattern=pattern, max_length=max_length),
-    ]
-
-
-OptionalText = Annotated[str | None, BeforeValidator(_blank_to_none)]
-Pan = Annotated[_code(PAN_PATTERN, 10) | None, BeforeValidator(_blank_to_none)]
-UdyamNumber = Annotated[_code(UDYAM_PATTERN, 30) | None, BeforeValidator(_blank_to_none)]
-Coi = Annotated[
-    Annotated[str, StringConstraints(max_length=120)] | None,
-    BeforeValidator(_normalize_code),
-]
-RequiredText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+from app.schemas.fields import (
+    AccountNumber,
+    GstRate,
+    Ifsc,
+    InvoiceNumber,
+    Money,
+    Name,
+    OptionalCin,
+    OptionalGstin,
+    OptionalName,
+    OptionalPan,
+    OptionalPhone,
+    OptionalText,
+    OptionalUdyam,
+    PastDate,
+    Percent,
+    PositiveMoney,
+    check_date_order,
+    check_pan_matches_gstin,
+)
+from app.services.taxation import DEFAULT_VENDOR_TDS_SECTION, TDS_SECTIONS
 
 
 class VendorBankAccountIn(BaseModel):
-    account_holder: RequiredText
-    bank_name: RequiredText
-    account_number: Annotated[str, StringConstraints(strip_whitespace=True, pattern=ACCOUNT_NUMBER_PATTERN)]
-    ifsc_code: _code(IFSC_PATTERN, 11)
+    account_holder: Name
+    bank_name: Name
+    account_number: AccountNumber
+    ifsc_code: Ifsc
 
 
 class VendorBankAccountOut(BaseModel):
@@ -59,28 +44,46 @@ class VendorBankAccountOut(BaseModel):
     ifsc_code: str
 
 
+def _no_repeated_accounts(accounts: list[VendorBankAccountIn]) -> None:
+    numbers = [(a.ifsc_code, a.account_number) for a in accounts]
+    if len(numbers) != len(set(numbers)):
+        raise ValueError("The same bank account is listed twice.")
+
+
 class VendorCreate(BaseModel):
-    business_name: RequiredText
+    business_name: Name
     email: EmailStr
-    phone: OptionalText = None
-    gst_number: OptionalText = None
-    msme_number: UdyamNumber = None
-    coi: Coi = None
-    pan: Pan = None
+    phone: OptionalPhone = None
+    gst_number: OptionalGstin = None
+    msme_number: OptionalUdyam = None
+    coi: OptionalCin = None
+    pan: OptionalPan = None
     bank_accounts: list[VendorBankAccountIn] = []
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        check_pan_matches_gstin(self.pan, self.gst_number)
+        _no_repeated_accounts(self.bank_accounts)
+        return self
 
 
 class VendorUpdate(BaseModel):
-    business_name: RequiredText | None = None
+    business_name: Name | None = None
     email: EmailStr | None = None
-    phone: OptionalText = None
-    gst_number: OptionalText = None
-    msme_number: UdyamNumber = None
-    coi: Coi = None
-    pan: Pan = None
+    phone: OptionalPhone = None
+    gst_number: OptionalGstin = None
+    msme_number: OptionalUdyam = None
+    coi: OptionalCin = None
+    pan: OptionalPan = None
     # When sent, replaces the vendor's bank accounts. Leave out to keep them.
     bank_accounts: list[VendorBankAccountIn] | None = None
     approval_status: VendorApprovalStatus | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        check_pan_matches_gstin(self.pan, self.gst_number)
+        _no_repeated_accounts(self.bank_accounts or [])
+        return self
 
 
 class VendorOut(BaseModel):
@@ -109,28 +112,39 @@ class VendorOut(BaseModel):
 class AllocationCreate(BaseModel):
     vendor_id: int
     client_id: int | None = None
-    project_name: str
-    scope_of_work: str | None = None
-    agreed_cost: float = 0.0
-    vendor_margin: float = 0.0
-    allocation_percent: float = 100.0
+    project_name: Name
+    scope_of_work: OptionalText = None
+    agreed_cost: Money = 0.0
+    vendor_margin: Money = 0.0
+    allocation_percent: Percent = 100.0
     start_date: date | None = None
     end_date: date | None = None
     expected_report_date: date | None = None
-    internal_owner: str | None = None
+    internal_owner: OptionalName = None
     status: AllocationStatus = AllocationStatus.NOT_STARTED
 
+    @model_validator(mode="after")
+    def _dates_in_order(self):
+        check_date_order(self.start_date, self.end_date, "the start date", "The end date")
+        return self
 
-class AllocationOut(AllocationCreate):
+
+class AllocationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-
-
-def _gst_slab(rate: float) -> float:
-    if rate not in VENDOR_GST_RATES:
-        raise ValueError(f"GST rate must be one of {', '.join(f'{r:g}%' for r in VENDOR_GST_RATES)}")
-    return rate
+    vendor_id: int
+    client_id: int | None
+    project_name: str
+    scope_of_work: str | None
+    agreed_cost: float
+    vendor_margin: float
+    allocation_percent: float
+    start_date: date | None
+    end_date: date | None
+    expected_report_date: date | None
+    internal_owner: str | None
+    status: AllocationStatus
 
 
 TdsSectionKey = Literal[tuple(TDS_SECTIONS)]  # type: ignore[valid-type]
@@ -141,10 +155,10 @@ class VendorInvoiceCreate(BaseModel):
 
     vendor_id: int
     project_id: int | None = None
-    invoice_number: str
-    invoice_date: date
-    invoice_amount: float = Field(default=0.0, ge=0)  # before GST
-    gst_rate: Annotated[float, AfterValidator(_gst_slab)] = 18.0
+    invoice_number: InvoiceNumber
+    invoice_date: PastDate
+    invoice_amount: PositiveMoney  # before GST
+    gst_rate: GstRate = 18.0
     is_interstate: bool = False
     tds_section: TdsSectionKey = DEFAULT_VENDOR_TDS_SECTION
 

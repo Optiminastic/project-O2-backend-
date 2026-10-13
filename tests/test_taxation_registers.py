@@ -6,6 +6,7 @@ import pytest
 
 from app.models import ClientInvoice, InvoiceStatus, Payment, Vendor
 from app.services.taxation import tds_deposit_due_date
+from app.services.numbering import business_date
 from tests.conftest import auth_header, default_service_id
 
 
@@ -120,7 +121,45 @@ def test_sales_register_lists_each_issued_invoice(client, users, client_row, db)
         "invoice_id": rows[0]["invoice_id"], "invoice_number": "INV/1", "invoice_date": "2026-10-05",
         "client_name": "Acme Traders", "client_gstin": "27BBBBB1111B1Z5", "taxable_value": 1000, "gst_rate": 18,
         "cgst": 0, "sgst": 0, "igst": 180, "gst_amount": 180, "total_amount": 1180,
+        "paid_principal": 0, "paid_gst": 0, "pending_principal": 1000, "pending_gst": 180,
     }]
+
+
+def sales_row(client, user):
+    return get(client, user, "/api/taxation/gst/sales?month=2026-10").json()[0]
+
+
+def split(row):
+    return {k: row[k] for k in ("paid_principal", "paid_gst", "pending_principal", "pending_gst")}
+
+
+def test_part_payment_splits_paid_and_pending_into_principal_and_gst(client, users, client_row, db):
+    inv = sale(db, client_row, number="INV/1", invoice_date=date(2026, 10, 5))  # 1,000 + 180 GST
+    # 500 cash + 90 TDS settles 590, half the invoice: half the principal and half the GST.
+    db.add(Payment(invoice_id=inv.id, amount=500, tds_deducted=90, payment_date=date(2026, 10, 20), bank_name="HDFC"))
+    db.commit()
+    assert split(sales_row(client, users["manager"])) == {
+        "paid_principal": 500, "paid_gst": 90, "pending_principal": 500, "pending_gst": 90,
+    }
+
+
+def test_paid_and_pending_always_add_up_to_the_invoice(client, users, client_row, db):
+    inv = sale(db, client_row, number="INV/1", invoice_date=date(2026, 10, 5))
+    db.add(Payment(invoice_id=inv.id, amount=333.33, tds_deducted=0, payment_date=date(2026, 10, 20), bank_name="HDFC"))
+    db.commit()
+    row = sales_row(client, users["manager"])
+    assert round(row["paid_principal"] + row["pending_principal"], 2) == 1000
+    assert round(row["paid_gst"] + row["pending_gst"], 2) == 180
+    assert round(row["paid_principal"] + row["paid_gst"], 2) == 333.33
+
+
+def test_fully_settled_invoice_has_nothing_pending(client, users, client_row, db):
+    inv = sale(db, client_row, number="INV/1", invoice_date=date(2026, 10, 5))
+    db.add(Payment(invoice_id=inv.id, amount=1080, tds_deducted=100, payment_date=date(2026, 10, 20), bank_name="HDFC"))
+    db.commit()
+    assert split(sales_row(client, users["manager"])) == {
+        "paid_principal": 1000, "paid_gst": 180, "pending_principal": 0, "pending_gst": 0,
+    }
 
 
 def test_purchase_register_marks_input_credit_eligibility(client, users, vendors):
@@ -144,10 +183,10 @@ def test_client_tds_register_and_certificate(client, users, client_row, db):
 
     url = f"/api/taxation/client-tds/{rows[0]['payment_id']}/certificate"
     h = auth_header(users["manager"])
-    assert client.patch(url, json={"certificate_number": "16A-Q3-001"}, headers=h).status_code == 422  # date needed too
-    res = client.patch(url, json={"certificate_number": "16A-Q3-001", "certificate_date": "2026-11-15"}, headers=h)
+    assert client.patch(url, json={"certificate_number": "16AQ3001"}, headers=h).status_code == 422  # date needed too
+    res = client.patch(url, json={"certificate_number": "16aq3001", "certificate_date": business_date().isoformat()}, headers=h)
     assert res.status_code == 200, res.text
-    assert res.json()["certificate_number"] == "16A-Q3-001"
+    assert res.json()["certificate_number"] == "16AQ3001"
     s = get(client, users["manager"], "/api/taxation/summary?month=2026-10").json()
     assert s["client_tds_certificates_pending"] == 0
 
@@ -164,7 +203,8 @@ def test_vendor_tds_register_deposit_and_overdue(client, users, vendors):
 
     h = auth_header(users["manager"])
     url = f"/api/taxation/vendor-tds/{old['id']}/deposit"
-    assert client.patch(url, json={"challan_number": "C1", "deposited_on": "2099-01-01"}, headers=h).status_code == 400
+    assert client.patch(url, json={"challan_number": "28100", "deposited_on": "2099-01-01"}, headers=h).status_code == 422
+    assert client.patch(url, json={"challan_number": "28100", "deposited_on": "2026-08-01"}, headers=h).status_code == 400
     res = client.patch(url, json={"challan_number": "28100123", "deposited_on": "2026-09-05"}, headers=h)
     assert res.status_code == 200, res.text
     assert res.json()["overdue"] is False

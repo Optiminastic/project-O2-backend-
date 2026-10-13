@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Client, Service
 from app.services.numbering import business_date
-from app.services.taxation import DEFAULT_CLIENT_TDS_RATE, compute_gst
+from app.services.taxation import AMOUNT_DECIMALS, DEFAULT_CLIENT_TDS_RATE, MAX_AMOUNT, MAX_TDS_RATE, compute_gst
 
 MAX_ROWS = 500
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -195,7 +195,13 @@ def _amount(value: object, errors: list[str]) -> float | None:
     if number <= 0:
         errors.append("Amount must be more than zero.")
         return None
-    return round(number, 2)
+    if number > MAX_AMOUNT:
+        errors.append(f"Amount is more than the ₹{MAX_AMOUNT:,.0f} limit for one invoice. Check for a typo.")
+        return None
+    if round(number, AMOUNT_DECIMALS) != number:
+        errors.append("Amount can have at most 2 decimal places (paise).")
+        return None
+    return number
 
 
 def _due_date(value: object, today: date, errors: list[str]) -> date | None:
@@ -215,8 +221,8 @@ def _tds_rate(value: object, errors: list[str]) -> float:
     if value is None or _text(value) == "":
         return DEFAULT_CLIENT_TDS_RATE
     rate = _number(value)
-    if rate is None or not 0 <= rate <= 100:
-        errors.append("TDS % must be a number from 0 to 100.")
+    if rate is None or not 0 <= rate <= MAX_TDS_RATE:
+        errors.append(f"TDS % must be a number from 0 to {MAX_TDS_RATE:g}.")
         return DEFAULT_CLIENT_TDS_RATE
     return rate
 

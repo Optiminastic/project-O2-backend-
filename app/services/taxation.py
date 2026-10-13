@@ -6,6 +6,17 @@ from datetime import date
 # Clients deduct TDS on professional fees under section 194J at 10%. TDS always
 # applies to client invoices; only the rate is set per invoice.
 DEFAULT_CLIENT_TDS_RATE = 10.0
+# The largest single amount accepted: ₹10,000 crore. Anything above is a typo.
+MAX_AMOUNT = 100_000_000_000.0
+# Rupees carry two decimals (paise).
+AMOUNT_DECIMALS = 2
+
+# The highest TDS rate in use: 20% under section 206AA when the payee has no PAN.
+MAX_TDS_RATE = 20.0
+
+# GST slabs on services. 12% and 28% stay for bills dated before the September 2025
+# rate change; 40% is the new rate for specified services.
+GST_RATE_SLABS = (0.0, 5.0, 12.0, 18.0, 28.0, 40.0)
 
 
 @dataclass
@@ -55,7 +66,7 @@ def vendor_net_payable(invoice_amount: float, gst_amount: float, tds_amount: flo
 # ---------- vendor side ----------
 
 # GST slabs a vendor bill can carry.
-VENDOR_GST_RATES = (0.0, 5.0, 12.0, 18.0, 28.0)
+VENDOR_GST_RATES = GST_RATE_SLABS
 
 
 @dataclass(frozen=True)

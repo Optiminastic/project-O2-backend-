@@ -1,8 +1,17 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, model_validator
 
 from app.models.enums import ReportReviewStatus, ApprovalStatus, VerificationStatus, PaymentMode
+from app.schemas.fields import (
+    BankReference,
+    Money,
+    Name,
+    OptionalName,
+    OptionalText,
+    PastDate,
+    PositiveMoney,
+)
 
 
 # ---------- Reports ----------
@@ -10,27 +19,37 @@ class ReportCreate(BaseModel):
     vendor_id: int | None = None
     client_id: int | None = None
     allocation_id: int | None = None
-    project_name: str
-    reporting_period: str | None = None
-    report_type: str | None = None
-    uploaded_file: str | None = None
-    submission_date: date | None = None
-    internal_reviewer: str | None = None
-    remarks: str | None = None
+    project_name: Name
+    reporting_period: OptionalName = None
+    report_type: OptionalName = None
+    uploaded_file: OptionalText = None
+    submission_date: PastDate | None = None
+    internal_reviewer: OptionalName = None
+    remarks: OptionalText = None
 
 
-class ReportOut(ReportCreate):
+class ReportOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    vendor_id: int | None
+    client_id: int | None
+    allocation_id: int | None
+    project_name: str
+    reporting_period: str | None
+    report_type: str | None
+    uploaded_file: str | None
+    submission_date: date | None
+    internal_reviewer: str | None
+    remarks: str | None
     review_status: ReportReviewStatus
     created_at: datetime
 
 
 class EmailReportRequest(BaseModel):
-    to_email: str | None = None  # defaults to client email
-    subject: str | None = None
-    body: str | None = None
+    to_email: EmailStr | None = None  # defaults to client email
+    subject: OptionalName = None
+    body: OptionalText = None
 
 
 class EmailLogOut(BaseModel):
@@ -47,22 +66,37 @@ class EmailLogOut(BaseModel):
 
 # ---------- Approvals ----------
 class ApprovalCreate(BaseModel):
-    payee_name: str
-    amount: float
-    purpose: str | None = None
+    payee_name: Name
+    amount: PositiveMoney
+    purpose: OptionalText = None
     vendor_invoice_id: int | None = None
-    tax_deductions: float = 0.0
-    net_payable: float = 0.0
-    bank_details: str | None = None
+    tax_deductions: Money = 0.0
+    # Left at 0, worked out as the amount less tax deductions.
+    net_payable: Money = 0.0
+    bank_details: OptionalText = None
+
+    @model_validator(mode="after")
+    def _within_amount(self):
+        if self.tax_deductions > self.amount:
+            raise ValueError("Tax deductions cannot be more than the amount.")
+        if self.net_payable > self.amount:
+            raise ValueError("Net payable cannot be more than the amount.")
+        return self
 
 
 class ApprovalDecision(BaseModel):
     approve: bool
-    comment: str | None = None
+    comment: OptionalText = None
+
+    @model_validator(mode="after")
+    def _reason_for_rejection(self):
+        if not self.approve and not self.comment:
+            raise ValueError("Give a reason when rejecting a payment.")
+        return self
 
 
 class PaymentRelease(BaseModel):
-    payment_reference: str
+    payment_reference: BankReference
 
 
 class ApprovalActionOut(BaseModel):

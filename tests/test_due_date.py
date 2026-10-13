@@ -33,7 +33,10 @@ def test_explicit_due_date_is_kept(client, users, client_row):
 
 
 def test_duplicate_gets_a_fresh_month_end_due_date(client, users, client_row, db):
-    src = create(client, users["exec"], client_row, due_date="2020-01-15")
+    src = create(client, users["exec"], client_row)
+    # A proforma whose due date has long passed; the API no longer accepts one directly.
+    db.get(ClientInvoice, src["id"]).due_date = date(2020, 1, 15)
+    db.commit()
     res = client.post(f"/api/invoices/{src['id']}/duplicate", headers=auth_header(users["exec"]))
     assert res.status_code == 201, res.text
     assert res.json()["due_date"] == month_end(business_date()).isoformat()

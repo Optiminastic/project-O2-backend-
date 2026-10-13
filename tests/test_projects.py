@@ -166,7 +166,7 @@ def test_sending_a_work_order_without_email_set_up(client, users, client_row, ve
 def record_vendor_invoice(client, user, vendor_id, project_id, amount=100000):
     return client.post("/api/vendors/invoices", json={
         "vendor_id": vendor_id, "project_id": project_id, "invoice_number": f"V-{amount}",
-        "invoice_date": "2026-10-15", "invoice_amount": amount, "gst_amount": amount * 0.18,
+        "invoice_date": business_date().isoformat(), "invoice_amount": amount, "gst_amount": amount * 0.18,
     }, headers=auth_header(user))
 
 

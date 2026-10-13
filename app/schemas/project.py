@@ -4,14 +4,9 @@ from typing import Annotated
 from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
 
 from app.models.enums import AllocationStatus
+from app.schemas.fields import Money, OptionalName, OptionalText
 
 CODE_PATTERN = r"^[A-Z0-9][A-Z0-9/_.-]{0,39}$"
-
-
-def _blank_to_none(value: object) -> object:
-    if isinstance(value, str) and not value.strip():
-        return None
-    return value
 
 
 def _normalize_code(value: object) -> object:
@@ -20,9 +15,7 @@ def _normalize_code(value: object) -> object:
 
 ProjectCode = Annotated[str, BeforeValidator(_normalize_code), StringConstraints(pattern=CODE_PATTERN)]
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
-OptionalText = Annotated[str | None, BeforeValidator(_blank_to_none)]
-Money = Annotated[float, Field(ge=0)]
-Percent = Annotated[float, Field(gt=0, le=100)]
+Percent = Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)]
 
 
 class ProjectVendorIn(BaseModel):
@@ -34,7 +27,7 @@ class ProjectVendorIn(BaseModel):
 class ProjectCreate(BaseModel):
     code: ProjectCode
     title: Title
-    brand: OptionalText = None
+    brand: OptionalName = None
     description: OptionalText = None
     client_id: int
     budget: Money = 0.0
@@ -49,7 +42,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     code: ProjectCode | None = None
     title: Title | None = None
-    brand: OptionalText = None
+    brand: OptionalName = None
     description: OptionalText = None
     client_id: int | None = None
     budget: Money | None = None

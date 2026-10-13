@@ -11,7 +11,7 @@ def vendor_body(**overrides):
         "business_name": "Quanta Research",
         "email": "accounts@quanta.example",
         "phone": "+91 98100 00000",
-        "gst_number": "27AAGFQ1234C1Z5",
+        "gst_number": "27AAGFQ1234C1ZO",
         "msme_number": "udyam-mh-26-0012345",
         "coi": "U72900MH2015PTC123456",
         "pan": "aagfq1234c",

@@ -2,14 +2,32 @@ from datetime import date, datetime
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
+from app.schemas.fields import (
+    GstRate,
+    LongText,
+    Money,
+    Name,
+    OptionalBankReference,
+    OptionalSacCode,
+    OptionalText,
+    PastDate,
+    PositiveMoney,
+    TdsRate,
+)
+from app.services.numbering import business_date
 from app.services.taxation import DEFAULT_CLIENT_TDS_RATE
 from app.models.enums import ClientApprovalMethod, InvoiceLinkPurpose, InvoiceStatus, PaymentMode, GstStatus
 
-ShortText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
-BankName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
-LongText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+
+def _not_past(value: date | None) -> date | None:
+    if value and value < business_date():
+        raise ValueError("Due date cannot be in the past.")
+    return value
+
+
+DueDate = Annotated[date | None, AfterValidator(_not_past)]
 
 
 class InvoiceCreate(BaseModel):
@@ -18,45 +36,52 @@ class InvoiceCreate(BaseModel):
     client_id: int
     agent_id: int | None = None
     service_id: int
-    due_date: date | None = None
+    due_date: DueDate = None
     # Left empty, these come from the chosen service.
-    service_description: str | None = None
-    sac_code: str | None = None
-    taxable_value: float = 0.0
-    gst_rate: float | None = None
+    service_description: OptionalText = None
+    sac_code: OptionalSacCode = None
+    taxable_value: PositiveMoney
+    gst_rate: GstRate | None = None
     is_interstate: bool = False
-    tds_rate: float = DEFAULT_CLIENT_TDS_RATE
-    supporting_document: str | None = None
-    internal_remarks: str | None = None
+    tds_rate: TdsRate = DEFAULT_CLIENT_TDS_RATE
+    supporting_document: OptionalText = None
+    internal_remarks: OptionalText = None
 
 
 class InvoiceUpdate(BaseModel):
     client_id: int | None = None
     agent_id: int | None = None
     service_id: int | None = None
+    # Not checked against today: an overdue invoice keeps its original due date when edited.
     due_date: date | None = None
-    service_description: str | None = None
-    sac_code: str | None = None
-    taxable_value: float | None = None
-    gst_rate: float | None = None
+    service_description: OptionalText = None
+    sac_code: OptionalSacCode = None
+    taxable_value: PositiveMoney | None = None
+    gst_rate: GstRate | None = None
     is_interstate: bool | None = None
-    tds_rate: float | None = None
-    supporting_document: str | None = None
-    internal_remarks: str | None = None
+    tds_rate: TdsRate | None = None
+    supporting_document: OptionalText = None
+    internal_remarks: OptionalText = None
     status: InvoiceStatus | None = None
 
 
 class PaymentCreate(BaseModel):
     """A client payment. It is always received by bank, so the mode is not chosen."""
 
-    amount: float
-    payment_date: date
-    bank_name: BankName
-    bank_reference: str | None = None
-    tds_deducted: float = Field(default=0.0, ge=0)
-    gst_component: float = 0.0
-    remarks: str | None = None
-    attachment: str | None = None
+    amount: PositiveMoney
+    payment_date: PastDate
+    bank_name: Name
+    bank_reference: OptionalBankReference = None
+    tds_deducted: Money = 0.0
+    gst_component: Money = 0.0
+    remarks: OptionalText = None
+    attachment: OptionalText = None
+
+    @model_validator(mode="after")
+    def _gst_within_amount(self):
+        if self.gst_component > self.amount:
+            raise ValueError("The GST component cannot be more than the amount received.")
+        return self
 
 
 class PaymentOut(BaseModel):
@@ -159,7 +184,7 @@ class TimelineEntry(BaseModel):
 
 
 class ClientApproveIn(BaseModel):
-    name: ShortText
+    name: Name
 
 
 class ClientChangesIn(BaseModel):

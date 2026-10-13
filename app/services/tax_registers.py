@@ -1,6 +1,7 @@
 """The four tax registers and the monthly tax position built from them.
 
-* GST on sales: output GST on our issued tax invoices, by invoice date.
+* GST on sales: output GST on our issued tax invoices, by invoice date, with
+  how much of each invoice's principal and GST is paid and still pending.
 * GST on purchases: GST on vendor bills; claimable as input credit (ITC) only
   when the vendor's GSTIN was captured.
 * TDS by clients: what clients deducted from their payments to us, by payment
@@ -13,7 +14,7 @@ The Taxation page and the dashboard both read from here, so they always agree.
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.period import Period
 from app.models import ClientInvoice, InvoiceStatus, Payment, PROFORMA_STAGES, VendorInvoice
@@ -25,6 +26,7 @@ from app.schemas.taxation import (
     TaxSummary,
     VendorTdsRow,
 )
+from app.services.invoice_lock import settled_amount
 from app.services.numbering import business_date
 from app.services.taxation import TDS_SECTIONS, tds_deposit_due_date
 
@@ -41,12 +43,31 @@ def _r(value: float) -> float:
 def _sales(db: Session, period: Period | None) -> list[ClientInvoice]:
     q = (
         db.query(ClientInvoice)
-        .options(joinedload(ClientInvoice.client))
+        .options(joinedload(ClientInvoice.client), selectinload(ClientInvoice.payments))
         .filter(ClientInvoice.status.notin_(EXCLUDED_SALE_STATUSES), ClientInvoice.invoice_date.isnot(None))
     )
     if period:
         q = q.filter(period.dates(ClientInvoice.invoice_date))
     return q.order_by(ClientInvoice.invoice_date.desc(), ClientInvoice.id.desc()).all()
+
+
+def _paid_and_pending(invoice: ClientInvoice) -> dict[str, float]:
+    """Split the settled and pending amounts into principal and GST, pro rata to the invoice.
+
+    Each rupee received covers principal and GST in the same proportion as the
+    invoice. GST is derived first and principal takes the remainder, so paid and
+    pending always add back to the invoice exactly.
+    """
+    total = invoice.total_amount
+    paid = min(settled_amount(invoice), total)
+    paid_gst = _r(paid * invoice.gst_amount / total) if total > 0 else 0.0
+    paid_principal = _r(paid - paid_gst)
+    return {
+        "paid_principal": paid_principal,
+        "paid_gst": paid_gst,
+        "pending_principal": _r(invoice.taxable_value - paid_principal),
+        "pending_gst": _r(invoice.gst_amount - paid_gst),
+    }
 
 
 def sales_register(db: Session, period: Period | None) -> list[SalesGstRow]:
@@ -64,6 +85,7 @@ def sales_register(db: Session, period: Period | None) -> list[SalesGstRow]:
             igst=i.igst,
             gst_amount=i.gst_amount,
             total_amount=i.total_amount,
+            **_paid_and_pending(i),
         )
         for i in _sales(db, period)
     ]

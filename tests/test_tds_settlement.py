@@ -1,11 +1,12 @@
 """A client that deducts TDS settles the invoice with cash plus the TDS it deducted."""
 
+from app.services.numbering import business_date
 from tests.conftest import auth_header
 from tests.test_payment_bank import issued_invoice  # 1,000 taxable + 18% GST = 1,180; TDS 10% = 100
 
 
 def pay(client, user, invoice_id, amount, tds=0.0):
-    body = {"amount": amount, "payment_date": "2026-10-06", "bank_name": "HDFC Bank", "tds_deducted": tds}
+    body = {"amount": amount, "payment_date": business_date().isoformat(), "bank_name": "HDFC Bank", "tds_deducted": tds}
     return client.post(f"/api/invoices/{invoice_id}/payments", json=body, headers=auth_header(user))
 
 

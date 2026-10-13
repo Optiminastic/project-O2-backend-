@@ -1,5 +1,6 @@
 """Client payments are received by bank: mode is always Bank and the bank name is required."""
 
+from app.services.numbering import business_date
 from tests.conftest import auth_header, default_service_id
 
 
@@ -16,7 +17,7 @@ def issued_invoice(client, users, client_row):
 
 
 def pay(client, user, invoice_id, **overrides):
-    body = {"amount": 500, "payment_date": "2026-10-06", "bank_reference": "UTR123", **overrides}
+    body = {"amount": 500, "payment_date": business_date().isoformat(), "bank_reference": "UTR123", **overrides}
     return client.post(f"/api/invoices/{invoice_id}/payments", json=body, headers=auth_header(user))
 
 

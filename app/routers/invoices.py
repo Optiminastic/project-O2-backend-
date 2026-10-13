@@ -323,15 +323,17 @@ def record_payment(
 ):
     inv = _get_invoice(db, invoice_id)
     if not inv.is_issued or inv.status == InvoiceStatus.CANCELLED:
-        raise HTTPException(400, "Payments can only be recorded against an issued, active tax invoice")
-    if payload.amount <= 0:
-        raise HTTPException(400, "Payment amount must be positive")
+        raise HTTPException(400, "Receipts can only be recorded against an issued, active tax invoice")
+    if inv.invoice_date and payload.payment_date < inv.invoice_date:
+        raise HTTPException(
+            400, f"The receipt date cannot be before the invoice date ({inv.invoice_date:%d %b %Y})."
+        )
     remaining = round(inv.total_amount - settled_amount(inv), 2)
     settling = round(payload.amount + payload.tds_deducted, 2)
     if settling > remaining + SETTLEMENT_TOLERANCE:
         raise HTTPException(
             400,
-            f"Payment of {workflow.format_inr(payload.amount)} plus TDS of {workflow.format_inr(payload.tds_deducted)} "
+            f"Receipt of {workflow.format_inr(payload.amount)} plus TDS of {workflow.format_inr(payload.tds_deducted)} "
             f"is more than the {workflow.format_inr(remaining)} still due on this invoice.",
         )
     tds_so_far = round(sum(p.tds_deducted or 0.0 for p in inv.payments), 2)
@@ -349,7 +351,7 @@ def record_payment(
     # This locks the invoice and recomputes status.
     recompute_invoice(inv)
     log_action(
-        db, user, "Recorded payment", "ClientInvoice", inv.id,
+        db, user, "Recorded receipt", "ClientInvoice", inv.id,
         f"₹{payload.amount:.2f} · invoice locked",
     )
     db.commit()
