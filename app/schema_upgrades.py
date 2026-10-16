@@ -256,6 +256,13 @@ MULTI_INVOICE_RECEIPTS = (
 )
 
 
+# Matches alembic revision f4d8a2c6e9b3 (group company vendors, default TDS section).
+VENDOR_GROUP_AND_TDS = (
+    "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS is_group_company BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS default_tds_section VARCHAR(30)",
+)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -272,7 +279,8 @@ def apply(engine: Engine) -> None:
     _run(
         engine,
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
-        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS,
+        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
+        + VENDOR_GROUP_AND_TDS,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

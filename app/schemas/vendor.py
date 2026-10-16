@@ -27,6 +27,9 @@ from app.schemas.fields import (
 from app.services.taxation import DEFAULT_VENDOR_TDS_SECTION, TDS_SECTIONS
 
 
+TdsSectionKey = Literal[tuple(TDS_SECTIONS)]  # type: ignore[valid-type]
+
+
 class VendorBankAccountIn(BaseModel):
     account_holder: Name
     bank_name: Name
@@ -59,6 +62,8 @@ class VendorCreate(BaseModel):
     coi: OptionalCin = None
     pan: OptionalPan = None
     bank_accounts: list[VendorBankAccountIn] = []
+    is_group_company: bool = False
+    default_tds_section: TdsSectionKey | None = None
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -78,6 +83,8 @@ class VendorUpdate(BaseModel):
     # When sent, replaces the vendor's bank accounts. Leave out to keep them.
     bank_accounts: list[VendorBankAccountIn] | None = None
     approval_status: VendorApprovalStatus | None = None
+    is_group_company: bool | None = None
+    default_tds_section: TdsSectionKey | None = None
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -106,6 +113,8 @@ class VendorOut(BaseModel):
     annual_service_contract: str | None
     approval_status: VendorApprovalStatus
     is_verified: bool
+    is_group_company: bool
+    default_tds_section: str | None
     created_at: datetime
 
 
@@ -147,7 +156,6 @@ class AllocationOut(BaseModel):
     status: AllocationStatus
 
 
-TdsSectionKey = Literal[tuple(TDS_SECTIONS)]  # type: ignore[valid-type]
 
 
 class VendorInvoiceCreate(BaseModel):

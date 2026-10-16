@@ -90,6 +90,7 @@ class ProjectVendorOut(BaseModel):
     vendor_id: int
     vendor_name: str
     vendor_email: str
+    is_group_company: bool = False
     work_percent: float
     agreed_cost: float
     invoiced: float  # vendor invoices recorded against this project, before GST

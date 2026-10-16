@@ -181,6 +181,7 @@ def _view(project: Project, invoiced: dict[tuple[int, int], float], billed: floa
             vendor_id=pv.vendor_id,
             vendor_name=pv.vendor.business_name,
             vendor_email=pv.vendor.email,
+            is_group_company=pv.vendor.is_group_company,
             work_percent=pv.work_percent,
             agreed_cost=pv.agreed_cost,
             invoiced=spent,

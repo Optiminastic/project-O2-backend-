@@ -41,6 +41,10 @@ class Vendor(Base, TimestampMixin):
     )
     # Onboarding is complete only when all mandatory financial/tax/bank details are verified.
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # One of the firm's own sister companies: seen and managed by the CFO and CEO only.
+    is_group_company: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # The TDS section (key of TDS_SECTIONS) prefilled on this vendor's invoices; None means the usual default.
+    default_tds_section: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     bank_accounts: Mapped[list["VendorBankAccount"]] = relationship(
         back_populates="vendor", cascade="all, delete-orphan", order_by="VendorBankAccount.id"

@@ -26,6 +26,7 @@ from app.schemas.vendor import (
 from app.services.taxation import TDS_SECTIONS, compute_gst, compute_tds, vendor_net_payable
 from app.services.projects import assert_vendor_on_project
 from app.services.audit import log_action
+from app.services.group_companies import assert_may_manage, assert_visible, sees_group_companies, visible_vendors
 from app.core.period import Period, month_period
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
@@ -36,8 +37,8 @@ MANAGER_ROLES = (UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER)
 # A vendor also needs at least one bank account to be paid into.
 MANDATORY_VERIFY_FIELDS = {"gst_number": "GST number", "pan": "PAN"}
 
-# Cannot be cleared on edit: a vendor always has a name and an email.
-REQUIRED_FIELDS = ("business_name", "email")
+# Cannot be cleared on edit: a vendor always has a name, an email and a group-company flag.
+REQUIRED_FIELDS = ("business_name", "email", "is_group_company")
 
 
 def _bank_accounts(accounts: list[VendorBankAccountIn]) -> list[VendorBankAccount]:
@@ -50,7 +51,7 @@ def list_vendors(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(Vendor)
+    q = visible_vendors(db.query(Vendor), user)
     if search:
         like = f"%{search}%"
         q = q.filter(or_(Vendor.business_name.ilike(like), Vendor.email.ilike(like)))
@@ -63,6 +64,7 @@ def create_vendor(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*MANAGER_ROLES, UserRole.FINANCE_EXECUTIVE)),
 ):
+    assert_may_manage(user, payload.is_group_company)
     vendor = Vendor(**payload.model_dump(exclude={"bank_accounts"}))
     vendor.bank_accounts = _bank_accounts(payload.bank_accounts)
     db.add(vendor)
@@ -75,10 +77,7 @@ def create_vendor(
 
 @router.get("/{vendor_id}", response_model=VendorOut)
 def get_vendor(vendor_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    vendor = db.get(Vendor, vendor_id)
-    if not vendor:
-        raise HTTPException(404, "Vendor not found")
-    return vendor
+    return assert_visible(db.get(Vendor, vendor_id), user)
 
 
 @router.patch("/{vendor_id}", response_model=VendorOut)
@@ -88,9 +87,8 @@ def update_vendor(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*MANAGER_ROLES)),
 ):
-    vendor = db.get(Vendor, vendor_id)
-    if not vendor:
-        raise HTTPException(404, "Vendor not found")
+    vendor = assert_visible(db.get(Vendor, vendor_id), user)
+    assert_may_manage(user, vendor.is_group_company or bool(payload.is_group_company))
     changes = payload.model_dump(exclude_unset=True, exclude={"bank_accounts"})
     for k, v in changes.items():
         if v is None and k in REQUIRED_FIELDS:
@@ -110,9 +108,8 @@ def verify_vendor(
     user: User = Depends(require_roles(*MANAGER_ROLES)),
 ):
     """Mark vendor verified - only if all mandatory financial/tax/bank details exist."""
-    vendor = db.get(Vendor, vendor_id)
-    if not vendor:
-        raise HTTPException(404, "Vendor not found")
+    vendor = assert_visible(db.get(Vendor, vendor_id), user)
+    assert_may_manage(user, vendor.is_group_company)
     missing = [label for field, label in MANDATORY_VERIFY_FIELDS.items() if not getattr(vendor, field)]
     if not vendor.bank_accounts:
         missing.append("a bank account")
@@ -157,6 +154,8 @@ def list_vendor_invoices(
     user: User = Depends(get_current_user),
 ):
     q = db.query(VendorInvoice)
+    if not sees_group_companies(user):
+        q = q.join(Vendor, Vendor.id == VendorInvoice.vendor_id).filter(Vendor.is_group_company.is_(False))
     if period:
         q = q.filter(period.dates(VendorInvoice.invoice_date))
     return q.order_by(VendorInvoice.created_at.desc()).all()
@@ -168,9 +167,7 @@ def create_vendor_invoice(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*MANAGER_ROLES, UserRole.FINANCE_EXECUTIVE)),
 ):
-    vendor = db.get(Vendor, payload.vendor_id)
-    if not vendor:
-        raise HTTPException(404, "Vendor not found")
+    vendor = assert_visible(db.get(Vendor, payload.vendor_id), user)
     if payload.project_id is not None:
         assert_vendor_on_project(db, payload.project_id, vendor.id)
     gst = compute_gst(payload.invoice_amount, payload.gst_rate, payload.is_interstate)

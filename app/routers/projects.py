@@ -6,7 +6,7 @@ from app.core.deps import get_current_user, require_roles
 from app.core.period import Period, month_period
 from app.core.rbac import NON_EXEC
 from app.database import get_db
-from app.models import Client, ClientInvoice, Project, ProjectVendor, User, VendorInvoice
+from app.models import Client, ClientInvoice, Project, ProjectVendor, User, Vendor, VendorInvoice
 from app.models.mixins import utcnow
 from app.schemas.project import (
     ProjectClientInvoiceOut,
@@ -19,6 +19,7 @@ from app.schemas.project import (
 )
 from app.services import projects as rules
 from app.services.audit import log_action
+from app.services.group_companies import RESTRICTED_NAME, assert_may_manage, masked_name, sees_group_companies
 from app.services.service_catalog import usable_services
 from app.services.email import send_work_order_email
 from app.services.invoice_workflow import format_inr
@@ -46,9 +47,32 @@ def _load(db: Session, project_id: int) -> Project:
     return project
 
 
-def _detail(db: Session, project: Project) -> ProjectDetail:
+def _masked(view: ProjectOut, user: User) -> ProjectOut:
+    """A group company on the project shows its cost but not who it is, except to the CFO and CEO."""
+    if not sees_group_companies(user):
+        for v in view.vendors:
+            if v.is_group_company:
+                v.vendor_name, v.vendor_email = RESTRICTED_NAME, ""
+    return view
+
+
+def _guard_group_vendors(db: Session, project: Project | None, incoming: list, user: User) -> None:
+    """Only the CFO and CEO add, change or remove a group company on a project."""
+    if sees_group_companies(user):
+        return
+    before = {pv.vendor_id: (pv.work_percent, pv.agreed_cost) for pv in (project.vendors if project else [])
+              if pv.vendor.is_group_company}
+    ids = [v.vendor_id for v in incoming]
+    group_ids = {v.id for v in db.query(Vendor).filter(Vendor.id.in_(ids), Vendor.is_group_company.is_(True))} if ids else set()
+    after = {v.vendor_id: (v.work_percent, v.agreed_cost) for v in incoming if v.vendor_id in group_ids}
+    if after != before:
+        assert_may_manage(user, True)
+
+
+def _detail(db: Session, project: Project, user: User) -> ProjectDetail:
     (view,) = rules.project_views(db, [project])
-    names = {pv.vendor_id: pv.vendor.business_name for pv in project.vendors}
+    view = _masked(view, user)
+    names = {pv.vendor_id: masked_name(pv.vendor, user) for pv in project.vendors}
     invoices = (
         db.query(VendorInvoice)
         .filter(VendorInvoice.project_id == project.id)
@@ -102,7 +126,7 @@ def list_projects(
             or_(Project.start_date.is_(None), Project.start_date < period.end),
             or_(Project.end_date.is_(None), Project.end_date >= period.start),
         )
-    return rules.project_views(db, q.order_by(Project.created_at.desc()).all())
+    return [_masked(v, user) for v in rules.project_views(db, q.order_by(Project.created_at.desc()).all())]
 
 
 @router.post("", response_model=ProjectDetail, status_code=201)
@@ -126,17 +150,18 @@ def create_project(
     )
     rules.set_services(project, services)
     project.expected_report_date = payload.expected_report_date or rules.default_report_date(start)
+    _guard_group_vendors(db, None, payload.vendors, user)
     rules.replace_vendors(db, project, payload.vendors)
     db.add(project)
     db.flush()
     log_action(db, user, "Created project", "Project", project.id, f"{project.code} {project.title}")
     db.commit()
-    return _detail(db, _load(db, project.id))
+    return _detail(db, _load(db, project.id), user)
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
 def get_project(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return _detail(db, _load(db, project_id))
+    return _detail(db, _load(db, project_id), user)
 
 
 @router.patch("/{project_id}", response_model=ProjectDetail)
@@ -173,10 +198,11 @@ def update_project(
     if moved_start or not project.expected_report_date:
         project.expected_report_date = rules.default_report_date(project.start_date)
     if payload.vendors is not None:
+        _guard_group_vendors(db, project, payload.vendors, user)
         rules.replace_vendors(db, project, payload.vendors)
     log_action(db, user, "Updated project", "Project", project.id, project.code)
     db.commit()
-    return _detail(db, _load(db, project.id))
+    return _detail(db, _load(db, project.id), user)
 
 
 @router.delete("/{project_id}", status_code=204)
@@ -198,9 +224,10 @@ def delete_project(
 
 # ---------- Work orders ----------
 
-def _work_order(db: Session, project_id: int, vendor_id: int) -> tuple[Project, ProjectVendor, bytes]:
+def _work_order(db: Session, project_id: int, vendor_id: int, user: User) -> tuple[Project, ProjectVendor, bytes]:
     project = _load(db, project_id)
     pv = rules.project_vendor(project, vendor_id)
+    assert_may_manage(user, pv.vendor.is_group_company)
     rules.ensure_work_order_number(db, pv)
     return project, pv, render_work_order_pdf(project, pv)
 
@@ -213,7 +240,7 @@ def download_work_order(
     user: User = Depends(require_roles(*EDIT_ROLES)),
 ):
     """The vendor's work order. The first download gives it its permanent WO number."""
-    project, pv, pdf = _work_order(db, project_id, vendor_id)
+    project, pv, pdf = _work_order(db, project_id, vendor_id, user)
     log_action(db, user, "Downloaded work order", "Project", project.id, pv.work_order_number)
     db.commit()
     return Response(
@@ -230,7 +257,7 @@ def send_work_order(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*EDIT_ROLES)),
 ):
-    project, pv, pdf = _work_order(db, project_id, vendor_id)
+    project, pv, pdf = _work_order(db, project_id, vendor_id, user)
     emailed = send_work_order_email(
         to_email=pv.vendor.email,
         vendor_name=pv.vendor.business_name,
