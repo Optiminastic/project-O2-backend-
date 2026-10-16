@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import settings
 from app.models import Client, Project, Service
 from app.services import spreadsheet
+from app.services.contract import billed_elsewhere, over_contract_message
 from app.services.numbering import business_date
 from app.services.spreadsheet import MAX_FILE_BYTES, MAX_ROWS, TableSpec, has_data, text_of
 from app.services.taxation import (
@@ -114,7 +115,24 @@ def check_rows(db: Session, records: list[dict[str, object]]) -> list[RowCheck]:
         checks.append(check)
 
     _flag_repeats(checks)
+    _flag_over_contract(db, checks)
     return checks
+
+
+def _flag_over_contract(db: Session, checks: list[RowCheck]) -> None:
+    """Rows are billed in file order, so each row counts the rows above it on the same project."""
+    running: dict[int, float] = {}
+    for c in checks:
+        if c.project is None or c.amount is None:
+            continue
+        pid = c.project.id
+        if pid not in running:
+            running[pid] = billed_elsewhere(db, pid)
+        message = over_contract_message(c.project, running[pid], c.amount)
+        if message:
+            c.errors.append(message)
+        else:
+            running[pid] = round(running[pid] + c.amount, 2)
 
 
 def _find_project(projects: dict[str, Project], value: str, errors: list[str]) -> Project | None:

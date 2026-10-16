@@ -38,7 +38,7 @@ def test_project_needs_an_active_service(client, users, client_row, seo, db):
 
 
 def test_project_shows_its_service_and_billing(client, users, client_row, seo, db):
-    project = new_project(client, users["manager"], client_row, seo.id, contract_value=5000).json()
+    project = new_project(client, users["manager"], client_row, seo.id, contract_value=20000).json()
     assert (project["service_title"], project["sac_code"], project["gst_rate"]) == ("SEO retainer", "998365", 18.0)
 
     first = new_invoice(client, users["exec"], project["id"], taxable_value=2000).json()
@@ -46,6 +46,9 @@ def test_project_shows_its_service_and_billing(client, users, client_row, seo, d
     cancelled = new_invoice(client, users["exec"], project["id"], taxable_value=9000).json()
     db.get(ClientInvoice, cancelled["id"]).status = InvoiceStatus.CANCELLED
     db.commit()
+    # The contract is later cut below what was already billed.
+    res = client.patch(f"/api/projects/{project['id']}", json={"contract_value": 5000}, headers=auth_header(users["manager"]))
+    assert res.status_code == 200, res.text
 
     detail = client.get(f"/api/projects/{project['id']}", headers=auth_header(users["exec"])).json()
     assert detail["billed"] == 6000  # the cancelled invoice does not count

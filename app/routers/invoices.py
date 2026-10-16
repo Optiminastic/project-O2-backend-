@@ -36,6 +36,7 @@ from app.services.invoice_lines import (
 )
 from app.services.invoice_lock import SETTLEMENT_TOLERANCE, assert_editable, recompute_invoice, settled_amount
 from app.services.audit import log_action
+from app.services.contract import assert_within_contract
 from app.services.numbering import PROFORMA_PREFIX, business_date, month_end, next_number
 from app.services.agents import resolve_agent_id
 from app.services.service_catalog import usable_project
@@ -79,6 +80,7 @@ def _new_proforma(
     **fields,
 ) -> ClientInvoice:
     """A draft proforma billing ``project``: its client, and one line per service in ``lines``."""
+    assert_within_contract(db, project, sum(line.taxable_value for line in lines))
     dated = proforma_date or business_date()
     inv = ClientInvoice(
         **fields,
@@ -322,6 +324,8 @@ def update_invoice(
         inv.is_interstate = interstate_for(inv.client, inv.is_interstate)
     apply_financials(inv)
     recompute_invoice(inv)
+    if new_lines is not None and not inv.is_issued:
+        assert_within_contract(db, new_lines[0], inv.taxable_value, exclude_invoice_id=inv.id)
     note = "CEO correction on locked invoice" if violations else "Updated invoice"
     log_action(db, user, note, "ClientInvoice", inv.id, ", ".join(violations) or None)
     db.commit()
