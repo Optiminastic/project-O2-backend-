@@ -1,13 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_roles
 from app.core.rbac import NON_EXEC
 from app.database import get_db
 from app.models import ClientInvoice, Project, Service, User
-from app.schemas.service import ServiceCreate, ServiceOut, ServiceUpdate
+from app.schemas.service import (
+    ServiceBulkCreatedOut,
+    ServiceBulkPreviewOut,
+    ServiceBulkRowOut,
+    ServiceCreate,
+    ServiceOut,
+    ServiceUpdate,
+)
+from app.services import bulk_services as bulk
 from app.services.audit import log_action
 from app.services.service_catalog import assert_title_free
+from app.services.spreadsheet import MAX_FILE_BYTES
 
 router = APIRouter(prefix="/services", tags=["services"])
 
@@ -42,6 +51,60 @@ def create_service(payload: ServiceCreate, db: Session = Depends(get_db), user: 
     db.commit()
     db.refresh(service)
     return service
+
+
+# ---------- Bulk upload ----------
+
+TEMPLATE_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/bulk/template")
+def bulk_template(user: User = Depends(require_roles(*NON_EXEC))):
+    return Response(
+        content=bulk.build_template(),
+        media_type=TEMPLATE_MEDIA_TYPE,
+        headers={"Content-Disposition": 'attachment; filename="bulk-services-template.xlsx"'},
+    )
+
+
+async def _checked_upload(db: Session, file: UploadFile) -> list[bulk.ServiceRowCheck]:
+    content = await file.read(MAX_FILE_BYTES + 1)
+    return bulk.check_rows(db, bulk.read_rows(file.filename or "", content))
+
+
+@router.post("/bulk/preview", response_model=ServiceBulkPreviewOut)
+async def bulk_preview(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """Check an upload without creating anything."""
+    checks = await _checked_upload(db, file)
+    rows = [ServiceBulkRowOut(**vars(c)) for c in checks]
+    error_count = sum(1 for r in rows if r.errors)
+    return ServiceBulkPreviewOut(rows=rows, ready=error_count == 0, service_count=len(rows), error_count=error_count)
+
+
+@router.post("/bulk", response_model=ServiceBulkCreatedOut, status_code=201)
+async def bulk_create(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """Create every service in the file in one transaction, or none if any row has an error."""
+    checks = await _checked_upload(db, file)
+    bad = sum(1 for c in checks if c.errors)
+    if bad:
+        noun = "row has" if bad == 1 else "rows have"
+        raise HTTPException(422, f"Nothing was created: {bad} {noun} problems. Fix them and upload again.")
+    services = [Service(title=c.title, sac_code=c.sac_code) for c in checks]
+    db.add_all(services)
+    db.flush()
+    log_action(db, user, "Bulk uploaded services", "Service", None, f"{len(services)} services")
+    db.commit()
+    for s in services:
+        db.refresh(s)
+    return ServiceBulkCreatedOut(created=len(services), services=services)
 
 
 @router.patch("/{service_id}", response_model=ServiceOut)
