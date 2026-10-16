@@ -504,7 +504,7 @@ def list_payments(invoice_id: int, db: Session = Depends(get_db), user: User = D
 
 
 @router.post("/{invoice_id}/send-to-client", response_model=WorkflowResult)
-def send_to_client(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles(*FINANCE_ROLES))):
+def send_to_client(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     inv = _get_invoice(db, invoice_id)
     return _workflow_result(db, inv, workflow.send_to_client(db, inv, user))
 
@@ -514,7 +514,7 @@ def record_client_approval(
     invoice_id: int,
     payload: ManualApprovalIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(*FINANCE_ROLES)),
+    user: User = Depends(get_current_user),
 ):
     inv = _get_invoice(db, invoice_id)
     workflow.approve_manually(db, inv, user, payload.note)

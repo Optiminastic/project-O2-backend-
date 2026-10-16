@@ -28,7 +28,7 @@ def new_invoice(client, user, client_id, **overrides):
 
 
 def issue(client, users, invoice_id):
-    sent = client.post(f"/api/invoices/{invoice_id}/send-to-client", headers=auth_header(users["manager"])).json()
+    sent = client.post(f"/api/invoices/{invoice_id}/send-to-client", headers=auth_header(users["coordinator"])).json()
     token = sent["link_url"].rsplit("/", 1)[-1]
     client.post(f"/api/public/invoices/{token}/approve", json={"name": "A. Client"})
     res = client.post(f"/api/invoices/{invoice_id}/issue", headers=auth_header(users["manager"]))

@@ -42,7 +42,7 @@ def approve_via_link(client, invoice_id, sent):
 
 def client_approved(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    approve_via_link(client, inv["id"], send(client, users["manager"], inv["id"]))
+    approve_via_link(client, inv["id"], send(client, users["coordinator"], inv["id"]))
     return inv
 
 
@@ -77,7 +77,7 @@ def test_patch_cannot_jump_to_a_workflow_stage(client, users, client_row):
 
 def test_send_to_client_creates_an_approval_link(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     assert sent["invoice"]["status"] == "Awaiting Client"
     assert sent["link_url"].startswith("http://testserver/i/")
     assert sent["emailed"] is False  # SMTP is not configured in tests
@@ -94,7 +94,7 @@ def test_send_to_client_creates_an_approval_link(client, users, client_row):
 
 def test_client_approves_via_link_once(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     approved = approve_via_link(client, inv["id"], sent)
     assert approved["status"] == "Client Approved"
 
@@ -110,14 +110,14 @@ def test_client_approves_via_link_once(client, users, client_row):
 
 def test_approval_requires_a_name(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     res = client.post(f"/api/public/invoices/{token_from(sent['link_url'])}/approve", json={"name": "  "})
     assert res.status_code == 422
 
 
 def test_client_requests_changes(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     res = client.post(
         f"/api/public/invoices/{token_from(sent['link_url'])}/request-changes",
         json={"comment": "Please split the retainer into two line items."},
@@ -131,7 +131,7 @@ def test_client_requests_changes(client, users, client_row):
 
 def test_editing_while_awaiting_client_reverts_to_draft_and_kills_the_link(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     res = client.patch(f"/api/invoices/{inv['id']}", json={"taxable_value": 90000}, headers=auth_header(users["exec"]))
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "Draft"
@@ -140,8 +140,8 @@ def test_editing_while_awaiting_client_reverts_to_draft_and_kills_the_link(clien
 
 def test_resend_revokes_the_previous_link(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    first = send(client, users["manager"], inv["id"])
-    second = send(client, users["manager"], inv["id"])
+    first = send(client, users["coordinator"], inv["id"])
+    second = send(client, users["coordinator"], inv["id"])
     assert first["link_url"] != second["link_url"]
     assert client.get(f"/api/public/invoices/{token_from(first['link_url'])}").status_code == 404
     assert client.get(f"/api/public/invoices/{token_from(second['link_url'])}").status_code == 200
@@ -149,7 +149,7 @@ def test_resend_revokes_the_previous_link(client, users, client_row):
 
 def test_expired_link_is_rejected(client, users, client_row, db):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     link = db.query(InvoiceLink).filter(InvoiceLink.token == token_from(sent["link_url"])).one()
     link.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     db.commit()
@@ -165,17 +165,17 @@ def test_unknown_token_is_404(client):
 
 def test_manual_client_approval_needs_a_note(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    res = client.post(f"/api/invoices/{inv['id']}/client-approval", json={"note": ""}, headers=auth_header(users["manager"]))
+    res = client.post(f"/api/invoices/{inv['id']}/client-approval", json={"note": ""}, headers=auth_header(users["coordinator"]))
     assert res.status_code == 422
 
 
 def test_manual_client_approval_revokes_open_links(client, users, client_row):
     inv = create_proforma(client, users["exec"], client_row)
-    sent = send(client, users["manager"], inv["id"])
+    sent = send(client, users["coordinator"], inv["id"])
     res = client.post(
         f"/api/invoices/{inv['id']}/client-approval",
         json={"note": "Approved on WhatsApp by R. Shah"},
-        headers=auth_header(users["manager"]),
+        headers=auth_header(users["coordinator"]),
     )
     assert res.status_code == 200, res.text
     body = res.json()
@@ -202,7 +202,7 @@ def test_executive_cannot_issue(client, users, client_row):
 
 def test_creator_cannot_issue_their_own_invoice(client, users, client_row):
     inv = create_proforma(client, users["manager"], client_row)
-    approve_via_link(client, inv["id"], send(client, users["manager"], inv["id"]))
+    approve_via_link(client, inv["id"], send(client, users["coordinator"], inv["id"]))
     res = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
     assert res.status_code == 403
     assert "created" in res.json()["detail"].lower()

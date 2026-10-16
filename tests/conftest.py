@@ -114,6 +114,7 @@ def users(db):
         "manager": _make_user(db, "manager@optiminastic.com", UserRole.FINANCE_MANAGER),
         "cfo": _make_user(db, "cfo@optiminastic.com", UserRole.CFO),
         "ceo": _make_user(db, "ceo@optiminastic.com", UserRole.ADMIN_CEO),
+        "coordinator": _make_user(db, "coordinator@optiminastic.com", UserRole.COORDINATOR),
     }
 
 

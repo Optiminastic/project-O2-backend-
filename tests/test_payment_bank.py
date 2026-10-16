@@ -10,7 +10,7 @@ def issued_invoice(client, users, client_row, tds_rate=10):
         json={"project_id": project_id_for(client_row), "taxable_value": 1000, "tds_rate": tds_rate},
         headers=auth_header(users["exec"]),
     ).json()
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["coordinator"])).json()
     client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
     client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
     return inv

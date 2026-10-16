@@ -1,4 +1,4 @@
-"""Client invoice lifecycle: proforma -> manager approval sends it to the client -> client approval -> manager issue.
+"""Client invoice lifecycle: proforma -> coordinator approval sends it to the client -> client approval -> manager issue.
 
     Draft --send--> Awaiting Client --client approves--> Client Approved --issue--> Sent
       ^                   |                                     |
@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.rbac import PI_APPROVER_ROLES
 from app.models import (
     ClientApprovalMethod,
     ClientInvoice,
@@ -57,6 +58,11 @@ def _require_stage(invoice: ClientInvoice, allowed: frozenset[InvoiceStatus], ac
 def _require_manager(user: User) -> None:
     if user.role not in ISSUER_ROLES:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a Finance Manager, CFO or CEO can do this")
+
+
+def _require_pi_approver(user: User) -> None:
+    if user.role not in PI_APPROVER_ROLES:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a Coordinator, CFO or CEO can approve a proforma")
 
 
 def _require_issuer(invoice: ClientInvoice, user: User) -> None:
@@ -111,8 +117,8 @@ def before_edit(db: Session, invoice: ClientInvoice, user: User) -> None:
 
 
 def send_to_client(db: Session, invoice: ClientInvoice, user: User) -> LinkDelivery:
-    """A manager's approval of the proforma: it goes to the client for confirmation."""
-    _require_manager(user)
+    """The coordinator's approval of the proforma: it goes to the client for confirmation."""
+    _require_pi_approver(user)
     _require_stage(invoice, SENDABLE, "send")
     invoice_links.revoke_open_links(db, invoice, InvoiceLinkPurpose.APPROVE)
     invoice.status = InvoiceStatus.AWAITING_CLIENT
@@ -157,7 +163,7 @@ def request_changes_via_link(db: Session, link: InvoiceLink, comment: str) -> No
 
 
 def approve_manually(db: Session, invoice: ClientInvoice, user: User, note: str) -> None:
-    _require_manager(user)
+    _require_pi_approver(user)
     _require_stage(invoice, SENDABLE, "record client approval for")
     invoice_links.revoke_open_links(db, invoice, InvoiceLinkPurpose.APPROVE)
     _mark_client_approved(invoice, ClientApprovalMethod.MANUAL, invoice.client.business_name, note)

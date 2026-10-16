@@ -21,6 +21,7 @@ ROLE_LABELS = {
     UserRole.CFO: "CFO",
     UserRole.FINANCE_MANAGER: "Finance Manager",
     UserRole.FINANCE_EXECUTIVE: "Finance Executive",
+    UserRole.COORDINATOR: "Coordinator",
 }
 
 

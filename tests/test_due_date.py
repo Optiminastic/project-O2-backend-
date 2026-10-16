@@ -44,7 +44,7 @@ def test_duplicate_gets_a_fresh_month_end_due_date(client, users, client_row, db
 
 
 def _issue(client, users, inv):
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["coordinator"])).json()
     client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
     res = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
     assert res.status_code == 200, res.text

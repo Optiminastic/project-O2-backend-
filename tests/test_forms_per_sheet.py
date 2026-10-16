@@ -188,10 +188,10 @@ def test_invoice_date_can_be_backdated_within_the_month(client, users, client_ro
     assert raise_invoice(client, users["exec"], {**body, "proforma_date": tomorrow.isoformat()}).status_code == 400
 
 
-# ---------- manager approval sends the proforma ----------
+# ---------- coordinator approval sends the proforma ----------
 
 
-def test_only_a_manager_sends_a_proforma_to_the_client(client, users, client_row, two_services):
+def test_only_a_coordinator_cfo_or_ceo_sends_a_proforma_to_the_client(client, users, client_row, two_services):
     p = multi_project(client, users["manager"], client_row.id, two_services)
     inv = raise_invoice(client, users["exec"], {"project_id": p["id"], "taxable_value": 1000}).json()
     url = f"/api/invoices/{inv['id']}/send-to-client"
@@ -200,7 +200,8 @@ def test_only_a_manager_sends_a_proforma_to_the_client(client, users, client_row
         f"/api/invoices/{inv['id']}/client-approval", json={"note": "Approved on call"}, headers=auth_header(users["exec"])
     )
     assert offline.status_code == 403
-    assert client.post(url, headers=auth_header(users["manager"])).status_code == 200
+    assert client.post(url, headers=auth_header(users["manager"])).status_code == 403
+    assert client.post(url, headers=auth_header(users["coordinator"])).status_code == 200
 
 
 # ---------- automatic TDS on receipts ----------

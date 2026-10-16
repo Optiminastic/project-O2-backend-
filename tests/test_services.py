@@ -124,7 +124,7 @@ def test_moving_a_proforma_to_another_project_reapplies_its_service(client, user
 
 def test_issued_invoice_service_is_locked(client, users, client_row):
     inv = new_invoice(client, users["exec"], client_row).json()
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["coordinator"])).json()
     client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
     client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
     other = add_service(client, users["manager"]).json()
@@ -135,7 +135,7 @@ def test_issued_invoice_service_is_locked(client, users, client_row):
 
 def test_client_sees_the_service_title(client, users, client_row):
     inv = new_invoice(client, users["exec"], client_row).json()
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["coordinator"])).json()
     view = client.get(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}").json()
     assert view["invoice"]["service_title"] == inv["service_title"]
 

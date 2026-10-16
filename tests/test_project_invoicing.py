@@ -112,7 +112,7 @@ def test_changing_the_project_on_a_draft_follows_the_new_project(client, users, 
 def test_issued_invoice_keeps_its_service_when_the_project_changes(client, users, client_row, seo, db):
     project_id = project_id_for(client_row)
     inv = new_invoice(client, users["exec"], project_id).json()
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["coordinator"])).json()
     client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
     issued = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"])).json()["invoice"]
 

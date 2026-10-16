@@ -245,6 +245,10 @@ DATA_UPGRADES = (
 )
 
 
+# Matches alembic revision d2b6e8a4c1f7 (coordinator role).
+COORDINATOR_ROLE = ("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'COORDINATOR'",)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -261,7 +265,7 @@ def apply(engine: Engine) -> None:
     _run(
         engine,
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
-        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES,
+        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

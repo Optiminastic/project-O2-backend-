@@ -6,6 +6,8 @@ class UserRole(str, Enum):
     CFO = "CFO"
     FINANCE_MANAGER = "FINANCE_MANAGER"
     FINANCE_EXECUTIVE = "FINANCE_EXECUTIVE"
+    # Approves proformas, which sends them to the client. Otherwise read-only.
+    COORDINATOR = "COORDINATOR"
 
 
 class InvitationStatus(str, Enum):
