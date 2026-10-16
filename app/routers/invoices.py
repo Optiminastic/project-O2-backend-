@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.core.deps import get_current_user, require_roles
-from app.models import AuditLog, ClientInvoice, CompanyBank, Payment, PaymentMode, Project, User, UserRole, InvoiceStatus
+from app.models import AuditLog, ClientInvoice, Project, User, UserRole, InvoiceStatus
 from app.schemas.invoice import (
     BulkCreatedOut,
     BulkPreviewOut,
@@ -22,6 +22,8 @@ from app.schemas.invoice import (
     ReturnIn,
     TimelineEntry,
     WorkflowResult,
+    MultiReceiptCreate,
+    MultiReceiptOut,
 )
 from app.services import bulk_invoices as bulk
 from app.services import invoice_document
@@ -34,8 +36,9 @@ from app.services.invoice_lines import (
     lines_changed,
     primary_service_id,
 )
-from app.services.invoice_lock import SETTLEMENT_TOLERANCE, assert_editable, recompute_invoice, settled_amount
+from app.services.invoice_lock import assert_editable, recompute_invoice
 from app.services.audit import log_action
+from app.services.receipts import ReceiptDetails, apply_receipt, new_receipt_ref, receiving_bank_name
 from app.services.contract import assert_within_contract
 from app.services.numbering import PROFORMA_PREFIX, business_date, month_end, next_number
 from app.services.agents import resolve_agent_id
@@ -433,40 +436,16 @@ def record_payment(
     user: User = Depends(require_roles(*FINANCE_ROLES)),
 ):
     inv = _get_invoice(db, invoice_id)
-    if not inv.is_issued or inv.status == InvoiceStatus.CANCELLED:
-        raise HTTPException(400, "Receipts can only be recorded against an issued, active tax invoice")
-    if inv.invoice_date and payload.payment_date < inv.invoice_date:
-        raise HTTPException(
-            400, f"The receipt date cannot be before the invoice date ({inv.invoice_date:%d %b %Y})."
-        )
-    remaining = round(inv.total_amount - settled_amount(inv), 2)
-    tds_so_far = round(sum(p.tds_deducted or 0.0 for p in inv.payments), 2)
-    tds = payload.tds_deducted
-    if tds is None:
-        tds = _tds_with_receipt(remaining, payload.amount, round(max(inv.expected_tds - tds_so_far, 0.0), 2))
-    settling = round(payload.amount + tds, 2)
-    if settling > remaining + SETTLEMENT_TOLERANCE:
-        raise HTTPException(
-            400,
-            f"Receipt of {workflow.format_inr(payload.amount)} plus TDS of {workflow.format_inr(tds)} "
-            f"is more than the {workflow.format_inr(remaining)} still due on this invoice.",
-        )
-    if tds_so_far + tds > inv.expected_tds + SETTLEMENT_TOLERANCE:
-        raise HTTPException(
-            400,
-            f"TDS of {workflow.format_inr(tds_so_far + tds)} is more than the "
-            f"{workflow.format_inr(inv.expected_tds)} expected at {inv.tds_rate:g}%. Check the amount the client deducted.",
-        )
-
-    payment = Payment(
-        payment_mode=PaymentMode.BANK,
-        **{**payload.model_dump(), "tds_deducted": tds, "bank_name": _receiving_bank_name(db, payload)},
+    details = ReceiptDetails(
+        payment_date=payload.payment_date,
+        bank_name=receiving_bank_name(db, payload.bank_account_id, payload.bank_name),
+        bank_account_id=payload.bank_account_id,
+        bank_reference=payload.bank_reference,
+        remarks=payload.remarks,
+        attachment=payload.attachment,
     )
-    # Through the relationship, so the payments already loaded for the checks above include it.
-    inv.payments.append(payment)
+    apply_receipt(inv, details, payload.amount, tds_deducted=payload.tds_deducted, gst_component=payload.gst_component)
     db.flush()
-    # This locks the invoice and recomputes status.
-    recompute_invoice(inv)
     log_action(
         db, user, "Recorded receipt", "ClientInvoice", inv.id,
         f"₹{payload.amount:.2f} · invoice locked",
@@ -476,27 +455,39 @@ def record_payment(
     return inv
 
 
-def _receiving_bank_name(db: Session, payload: PaymentCreate) -> str:
-    """The bank as the receipt records it: one of ours by id, or the name typed."""
-    if payload.bank_account_id is None:
-        return payload.bank_name
-    bank = db.get(CompanyBank, payload.bank_account_id)
-    if bank is None:
-        raise HTTPException(404, "Bank not found")
-    if not bank.is_active:
-        raise HTTPException(400, f"{bank.label} is deactivated. Choose another bank.")
-    return bank.label
-
-
-def _tds_with_receipt(remaining: float, amount: float, tds_left: float) -> float:
-    """TDS counted with a receipt when the form does not ask for it.
-
-    Clients pay net of TDS, so once the cash clears everything but the TDS still
-    expected, that TDS is taken as deducted. Earlier part payments count none.
-    """
-    if amount < remaining - tds_left - SETTLEMENT_TOLERANCE:
-        return 0.0
-    return round(min(tds_left, max(remaining - amount, 0.0)), 2)
+@router.post("/receipts", response_model=MultiReceiptOut, status_code=201)
+def record_multi_invoice_receipt(
+    payload: MultiReceiptCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*FINANCE_ROLES)),
+):
+    """One bank receipt paying several invoices of the same client, split as the user chose. All or nothing."""
+    invoices = [_get_invoice(db, a.invoice_id) for a in payload.allocations]
+    if len({inv.client_id for inv in invoices}) > 1:
+        raise HTTPException(400, "One receipt can only pay invoices of the same client.")
+    details = ReceiptDetails(
+        payment_date=payload.payment_date,
+        bank_name=receiving_bank_name(db, payload.bank_account_id, payload.bank_name),
+        bank_account_id=payload.bank_account_id,
+        bank_reference=payload.bank_reference,
+        remarks=payload.remarks,
+        attachment=payload.attachment,
+    )
+    ref = new_receipt_ref()
+    payments = [
+        apply_receipt(inv, details, a.amount, gst_component=a.gst_component, receipt_ref=ref)
+        for inv, a in zip(invoices, payload.allocations)
+    ]
+    db.flush()
+    total = round(sum(a.amount for a in payload.allocations), 2)
+    numbers = ", ".join(inv.display_number for inv in invoices)
+    for inv, a in zip(invoices, payload.allocations):
+        log_action(
+            db, user, "Recorded receipt", "ClientInvoice", inv.id,
+            f"₹{a.amount:.2f} of a ₹{total:.2f} receipt across {numbers} · invoice locked",
+        )
+    db.commit()
+    return MultiReceiptOut(receipt_ref=ref, total=total, payments=[PaymentOut.model_validate(p) for p in payments])
 
 
 @router.get("/{invoice_id}/payments", response_model=list[PaymentOut])

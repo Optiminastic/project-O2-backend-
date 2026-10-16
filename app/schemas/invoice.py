@@ -118,6 +118,38 @@ class PaymentCreate(BaseModel):
         return self
 
 
+MAX_RECEIPT_INVOICES = 50
+
+
+class ReceiptAllocation(BaseModel):
+    """The part of one receipt that pays one invoice."""
+
+    invoice_id: int
+    amount: PositiveMoney
+    gst_component: Money = 0.0
+
+
+class MultiReceiptCreate(BaseModel):
+    """One bank receipt paying several invoices of the same client. TDS is counted per invoice, as on one receipt."""
+
+    payment_date: PastDate
+    bank_account_id: int | None = None
+    bank_name: Name | None = None
+    bank_reference: OptionalBankReference = None
+    remarks: OptionalText = None
+    attachment: OptionalText = None
+    allocations: list[ReceiptAllocation] = Field(min_length=1, max_length=MAX_RECEIPT_INVOICES)
+
+    @model_validator(mode="after")
+    def _one_line_per_invoice(self):
+        if self.bank_account_id is None and not self.bank_name:
+            raise ValueError("Choose the bank the money was received into.")
+        ids = [a.invoice_id for a in self.allocations]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Each invoice can appear only once on a receipt.")
+        return self
+
+
 class PaymentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -133,6 +165,14 @@ class PaymentOut(BaseModel):
     gst_component: float
     remarks: str | None
     attachment: str | None
+    # Shared by the rows of one receipt that paid several invoices.
+    receipt_ref: str | None = None
+
+
+class MultiReceiptOut(BaseModel):
+    receipt_ref: str
+    total: float
+    payments: list[PaymentOut]
 
 
 class InvoiceLineOut(BaseModel):

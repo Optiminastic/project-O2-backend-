@@ -5,6 +5,7 @@ from datetime import date
 
 import pandas as pd
 
+from sqlalchemy import Numeric, func
 from sqlalchemy.orm import Session
 
 from app.models import BankTransaction, Payment, PaymentApproval, VerificationStatus, ApprovalStatus
@@ -85,10 +86,12 @@ def auto_match(db: Session, txn: BankTransaction) -> bool:
             .filter(Payment.amount == txn.amount)
             .first()
         )
+    if payment is None and txn.amount > 0:
+        payment = _receipt_totalling(db, txn.amount)
     if payment is not None:
         txn.matched_payment_id = payment.id
         txn.verification_status = VerificationStatus.AUTO_MATCHED
-        txn.match_note = f"Matched payment #{payment.id} on invoice #{payment.invoice_id}"
+        txn.match_note = _payment_note(db, payment)
         return True
 
     # 2) Match against released payment approvals by amount.
@@ -111,3 +114,26 @@ def auto_match(db: Session, txn: BankTransaction) -> bool:
     txn.verification_status = VerificationStatus.MISMATCH
     txn.match_note = "No matching system record found"
     return False
+
+
+def _receipt_totalling(db: Session, amount: float) -> Payment | None:
+    """The first row of a receipt across several invoices whose rows add up to ``amount``."""
+    ref = (
+        db.query(Payment.receipt_ref)
+        .filter(Payment.receipt_ref.is_not(None))
+        .group_by(Payment.receipt_ref)
+        .having(func.round(func.sum(Payment.amount).cast(Numeric), 2) == round(amount, 2))
+        .limit(1)
+        .scalar()
+    )
+    if ref is None:
+        return None
+    return db.query(Payment).filter(Payment.receipt_ref == ref).order_by(Payment.id).first()
+
+
+def _payment_note(db: Session, payment: Payment) -> str:
+    if payment.receipt_ref:
+        count = db.query(Payment).filter(Payment.receipt_ref == payment.receipt_ref).count()
+        if count > 1:
+            return f"Matched a receipt across {count} invoices (payment #{payment.id} and others)"
+    return f"Matched payment #{payment.id} on invoice #{payment.invoice_id}"

@@ -249,6 +249,13 @@ DATA_UPGRADES = (
 COORDINATOR_ROLE = ("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'COORDINATOR'",)
 
 
+# Matches alembic revision e3c7f9b5d2a8 (one receipt across several invoices).
+MULTI_INVOICE_RECEIPTS = (
+    "ALTER TABLE payments ADD COLUMN IF NOT EXISTS receipt_ref VARCHAR(36)",
+    "CREATE INDEX IF NOT EXISTS ix_payments_receipt_ref ON payments (receipt_ref)",
+)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -265,7 +272,7 @@ def apply(engine: Engine) -> None:
     _run(
         engine,
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
-        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE,
+        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

@@ -179,6 +179,8 @@ class Payment(Base, TimestampMixin):
     gst_component: Mapped[float] = mapped_column(Float, default=0.0)
     remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Shared by the rows of one bank receipt that paid several invoices of the client.
+    receipt_ref: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
     invoice: Mapped["ClientInvoice"] = relationship(back_populates="payments")
 
