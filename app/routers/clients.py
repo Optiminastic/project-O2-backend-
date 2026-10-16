@@ -65,6 +65,10 @@ def update_client(
     changes = payload.model_dump(exclude_unset=True)
     if "agent_id" in changes:
         changes["agent_id"] = resolve_agent_id(db, changes["agent_id"])
+    if "msme" in changes and changes["msme"] is None:
+        changes.pop("msme")
+    if changes.get("msme") is False:
+        changes["msme_number"] = None  # the Udyam number belongs only to an MSME
     for k, v in changes.items():
         setattr(client, k, v)
     log_action(db, user, "Updated client", "Client", client.id)

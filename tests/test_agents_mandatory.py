@@ -2,7 +2,7 @@
 
 from app.models import Agent
 from app.services.agents import HOUSE_AGENT_NAME, ensure_house_agent, house_agent
-from tests.conftest import auth_header, default_service_id
+from tests.conftest import auth_header, project_id_for
 
 
 def make_agent(db, name="Techcores", rate=5.0) -> Agent:
@@ -21,14 +21,14 @@ def new_client(client, user, **overrides):
 
 
 def new_invoice(client, user, client_id, **overrides):
-    body = {"client_id": client_id, "taxable_value": 1000, "service_id": default_service_id(), **overrides}
+    body = {"project_id": project_id_for(client_id), "taxable_value": 1000, **overrides}
     res = client.post("/api/invoices", json=body, headers=auth_header(user))
     assert res.status_code == 201, res.text
     return res.json()
 
 
 def issue(client, users, invoice_id):
-    sent = client.post(f"/api/invoices/{invoice_id}/send-to-client", headers=auth_header(users["exec"])).json()
+    sent = client.post(f"/api/invoices/{invoice_id}/send-to-client", headers=auth_header(users["manager"])).json()
     token = sent["link_url"].rsplit("/", 1)[-1]
     client.post(f"/api/public/invoices/{token}/approve", json={"name": "A. Client"})
     res = client.post(f"/api/invoices/{invoice_id}/issue", headers=auth_header(users["manager"]))

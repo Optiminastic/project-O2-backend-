@@ -101,7 +101,7 @@ Cin = Annotated[
 SacCode = Annotated[
     str,
     BeforeValidator(_compact_upper),
-    _matches(ids.SAC_PATTERN, "SAC code must be 6 digits starting with 99 (e.g. 998311)."),
+    _matches(ids.SAC_PATTERN, "SAC code must be 4 to 8 digits (e.g. 998311)."),
 ]
 InvoiceNumber = Annotated[
     str,

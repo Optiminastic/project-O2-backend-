@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import String, Text, Float, Boolean, Date, DateTime, ForeignKey, Integer, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -32,6 +33,9 @@ class ClientInvoice(Base, TimestampMixin):
     invoice_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     proforma_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # The project billed. Client and service details are copied from it when chosen.
+    # Nullable only for invoices raised before invoices belonged to projects.
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     # The catalogue service billed. Title, description, SAC and GST rate are
     # copied onto the invoice when chosen, so catalogue edits never rewrite it.
     # Nullable only for invoices raised before the catalogue existed.
@@ -80,9 +84,15 @@ class ClientInvoice(Base, TimestampMixin):
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped["Client"] = relationship(back_populates="invoices")  # noqa: F821
+    project: Mapped["Project | None"] = relationship()  # noqa: F821
     agent: Mapped["Agent"] = relationship(back_populates="invoices")  # noqa: F821
     payments: Mapped[list["Payment"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"
+    )
+    # One line per service billed. Empty only on invoices raised before lines existed,
+    # whose single service lives in the header fields above.
+    lines: Mapped[list["InvoiceLine"]] = relationship(
+        back_populates="invoice", cascade="all, delete-orphan", order_by="InvoiceLine.position"
     )
     links: Mapped[list["InvoiceLink"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"
@@ -94,10 +104,55 @@ class ClientInvoice(Base, TimestampMixin):
         return self.status not in PROFORMA_STAGES
 
     @property
+    def line_items(self) -> list:
+        """The invoice's lines; an invoice raised before lines existed reads as one line from its header."""
+        if self.lines:
+            return list(self.lines)
+        return [SimpleNamespace(
+            id=None,
+            position=0,
+            service_id=self.service_id,
+            service_title=self.service_title or "Professional services",
+            description=self.service_description,
+            sac_code=self.sac_code,
+            gst_rate=self.gst_rate,
+            taxable_value=self.taxable_value,
+            gst_amount=self.gst_amount,
+            cgst=self.cgst,
+            sgst=self.sgst,
+            igst=self.igst,
+        )]
+
+    @property
     def display_number(self) -> str:
         if self.is_issued or not self.proforma_number:
             return self.invoice_number or self.proforma_number or f"#{self.id}"
         return self.proforma_number
+
+
+class InvoiceLine(Base, TimestampMixin):
+    """One service billed on an invoice, with its own SAC code and tax.
+
+    Service details are copied when the line is made, so catalogue edits never rewrite it.
+    """
+
+    __tablename__ = "invoice_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("client_invoices.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    service_id: Mapped[int | None] = mapped_column(ForeignKey("services.id"), nullable=True)
+    service_title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sac_code: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    gst_rate: Mapped[float] = mapped_column(Float, default=18.0)
+    taxable_value: Mapped[float] = mapped_column(Float, default=0.0)
+    gst_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    cgst: Mapped[float] = mapped_column(Float, default=0.0)
+    sgst: Mapped[float] = mapped_column(Float, default=0.0)
+    igst: Mapped[float] = mapped_column(Float, default=0.0)
+
+    invoice: Mapped["ClientInvoice"] = relationship(back_populates="lines")
 
 
 class Payment(Base, TimestampMixin):
@@ -112,8 +167,11 @@ class Payment(Base, TimestampMixin):
     payment_date: Mapped[date] = mapped_column(Date)
     bank_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
     payment_mode: Mapped[PaymentMode] = mapped_column(SAEnum(PaymentMode), default=PaymentMode.BANK)
-    # The bank account the money was received into. Null only on older payments.
+    # The bank account the money was received into, as it read when recorded
+    # ("IndusInd Bank ··2018"). Null only on older payments.
     bank_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # One of our banks (Banks page). Null on payments recorded before banks were listed.
+    bank_account_id: Mapped[int | None] = mapped_column(ForeignKey("company_banks.id"), nullable=True, index=True)
     tds_deducted: Mapped[float] = mapped_column(Float, default=0.0)
     # Form 16A from the client for the TDS above; it is what lets us claim the credit.
     tds_certificate_number: Mapped[str | None] = mapped_column(String(60), nullable=True)

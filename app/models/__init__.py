@@ -17,8 +17,10 @@ from app.models.user import User
 from app.models.invitation import Invitation
 from app.models.agent import Agent
 from app.models.service import Service
+from app.models.bank import CompanyBank
+from app.models.data_upgrade import DataUpgrade
 from app.models.client import Client
-from app.models.invoice import ClientInvoice, Payment, InvoiceLink, DocumentSequence
+from app.models.invoice import ClientInvoice, InvoiceLine, Payment, InvoiceLink, DocumentSequence
 from app.models.vendor import Vendor, VendorAllocation, VendorBankAccount, VendorInvoice
 from app.models.project import Project, ProjectVendor
 from app.models.report import VendorReport, EmailLog
@@ -44,8 +46,11 @@ __all__ = [
     "Invitation",
     "Agent",
     "Service",
+    "CompanyBank",
+    "DataUpgrade",
     "Client",
     "ClientInvoice",
+    "InvoiceLine",
     "Payment",
     "InvoiceLink",
     "DocumentSequence",

@@ -46,16 +46,23 @@ class Settings(BaseSettings):
 
     # Supplier details printed on every proforma and tax invoice. A GST tax
     # invoice is invalid without the supplier's legal name and GSTIN, so issuing
-    # is refused until both are set.
-    company_legal_name: str = ""
-    company_address: str = ""
-    company_gstin: str = ""
-    company_state: str = ""
-    company_pan: str = ""
-    company_email: str = ""
-    company_bank_name: str = ""
-    company_bank_account: str = ""
-    company_bank_ifsc: str = ""
+    # is refused when either is blanked. Defaults are Optiminastic's own
+    # registered details (public: they appear on every invoice); env overrides.
+    company_legal_name: str = "OPTIMINASTIC INFOMEDIA PVT LTD"
+    company_address: str = (
+        "8 floor, Unit No. 8002, NIBR Corporate Park 1 Aerocity, NIBR Corporate Park, Safed Pool, "
+        "Andheri East, Mumbai, Mumbai Suburban, Maharashtra, 400072"
+    )
+    company_gstin: str = "27AACCO7134Q1ZW"
+    company_state: str = "Maharashtra"
+    company_pan: str = "AACCO7134Q"
+    company_email: str = "info@optiminastic.com"
+    company_bank_name: str = "IndusInd Bank Ltd"
+    company_bank_account: str = "252122052018"
+    company_bank_ifsc: str = "INDB0001075"
+    company_bank_branch: str = "SakiNaka Branch"
+    # Add Optiminastic's standard service list to the catalogue once, at startup.
+    seed_service_catalogue: bool = True
 
     # Client-facing invoice links (/i/<token>).
     invoice_approval_link_days: int = 30

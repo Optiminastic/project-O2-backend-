@@ -4,9 +4,10 @@ from datetime import timedelta
 
 import pytest
 
+from app.models import Service
 from app.services.identifiers import gstin_check_char, gstin_error
 from app.services.numbering import business_date
-from tests.conftest import auth_header, default_service_id
+from tests.conftest import auth_header, project_id_for
 from tests.test_payment_bank import issued_invoice
 
 GSTIN = "27AAGFQ1234C1ZO"  # valid checksum; PAN AAGFQ1234C
@@ -100,7 +101,7 @@ def test_agent_rejects_bad_details(client, users, fields):
 
 
 def new_invoice(client, user, client_row, **fields):
-    body = {"client_id": client_row.id, "service_id": default_service_id(), "taxable_value": 1000, **fields}
+    body = {"project_id": project_id_for(client_row), "taxable_value": 1000, **fields}
     return client.post("/api/invoices", json=body, headers=auth_header(user))
 
 
@@ -109,19 +110,22 @@ def new_invoice(client, user, client_row, **fields):
     {"taxable_value": -10},
     {"taxable_value": 100.555},  # paise have two decimals
     {"taxable_value": 1e12},  # above the ₹10,000 crore ceiling
-    {"gst_rate": 15},  # not a GST slab
     {"tds_rate": 25},
-    {"sac_code": "1234"},
     {"due_date": (TODAY - timedelta(days=1)).isoformat()},
 ])
 def test_invoice_rejects_bad_amounts_rates_and_dates(client, users, client_row, fields):
     assert new_invoice(client, users["exec"], client_row, **fields).status_code == 422
 
 
-def test_invoice_accepts_a_valid_slab_and_sac(client, users, client_row):
-    res = new_invoice(client, users["exec"], client_row, taxable_value=1234.5, gst_rate=5, sac_code="998312")
+def test_invoice_uses_its_projects_slab_and_sac(client, users, client_row, db):
+    # The GST rate and SAC code are checked on the service; the invoice takes them from the project.
+    service = Service(title="Design", sac_code="998312", gst_rate=5)
+    db.add(service)
+    db.commit()
+    body = {"project_id": project_id_for(client_row, service.id), "taxable_value": 1234.5, "gst_rate": 18}
+    res = client.post("/api/invoices", json=body, headers=auth_header(users["exec"]))
     assert res.status_code == 201, res.text
-    assert res.json()["gst_amount"] == 61.73
+    assert (res.json()["sac_code"], res.json()["gst_amount"]) == ("998312", 61.73)
 
 
 # ---------- receipts ----------

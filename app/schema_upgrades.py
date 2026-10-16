@@ -11,6 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from app.config import settings
+
 logger = logging.getLogger("o2.schema")
 
 # Matches alembic revision d4a7c2e9f1b8 (invoice approval workflow).
@@ -157,6 +159,92 @@ TAX_TRACKING = (
 )
 
 
+# Matches alembic revision f6c2b8d4a1e3 (project-based invoicing).
+PROJECT_INVOICING = (
+    """
+    ALTER TABLE projects
+        ADD COLUMN IF NOT EXISTS service_id INTEGER REFERENCES services(id),
+        ADD COLUMN IF NOT EXISTS contract_value DOUBLE PRECISION NOT NULL DEFAULT 0
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_projects_service_id ON projects (service_id)",
+    "ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id)",
+    "CREATE INDEX IF NOT EXISTS ix_client_invoices_project_id ON client_invoices (project_id)",
+)
+
+
+# Matches alembic revision a7d3e9c5b2f4 (forms per the PROJECT O2 sheet).
+FORMS_PER_SHEET = (
+    """
+    ALTER TABLE clients
+        ADD COLUMN IF NOT EXISTS msme BOOLEAN NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS msme_number VARCHAR(40)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_services (
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        service_id INTEGER NOT NULL REFERENCES services(id),
+        PRIMARY KEY (project_id, service_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_project_services_service_id ON project_services (service_id)",
+    # Projects made when a project billed one service keep it as their only service.
+    """
+    INSERT INTO project_services (project_id, service_id)
+    SELECT id, service_id FROM projects WHERE service_id IS NOT NULL
+    ON CONFLICT DO NOTHING
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invoice_lines (
+        id SERIAL PRIMARY KEY,
+        invoice_id INTEGER NOT NULL REFERENCES client_invoices(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL DEFAULT 0,
+        service_id INTEGER REFERENCES services(id),
+        service_title VARCHAR(200) NOT NULL,
+        description TEXT,
+        sac_code VARCHAR(12),
+        gst_rate DOUBLE PRECISION NOT NULL DEFAULT 18,
+        taxable_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+        gst_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+        cgst DOUBLE PRECISION NOT NULL DEFAULT 0,
+        sgst DOUBLE PRECISION NOT NULL DEFAULT 0,
+        igst DOUBLE PRECISION NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_invoice_lines_invoice_id ON invoice_lines (invoice_id)",
+)
+
+
+# Matches alembic revision b8e4f1a6c3d9 (our bank accounts, named with their last four digits).
+COMPANY_BANKS = (
+    """
+    CREATE TABLE IF NOT EXISTS company_banks (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(160) NOT NULL,
+        account_last4 VARCHAR(4) NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_company_banks_name_last4 ON company_banks (lower(name), account_last4)",
+    "ALTER TABLE payments ADD COLUMN IF NOT EXISTS bank_account_id INTEGER REFERENCES company_banks(id)",
+    "CREATE INDEX IF NOT EXISTS ix_payments_bank_account_id ON payments (bank_account_id)",
+)
+
+
+# Matches alembic revision c9f5a2b7d4e1 (one-time data steps, e.g. the standard service list).
+DATA_UPGRADES = (
+    """
+    CREATE TABLE IF NOT EXISTS data_upgrades (
+        name VARCHAR(80) PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -170,9 +258,26 @@ def _run(engine: Engine, statements: tuple[str, ...]) -> None:
 def apply(engine: Engine) -> None:
     if engine.dialect.name != "postgresql":
         return
-    _run(engine, INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING)
+    _run(
+        engine,
+        INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
+        + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES,
+    )
     _ensure_house_agent(engine)
+    if settings.seed_service_catalogue:
+        _seed_service_catalogue(engine)
     _run(engine, AGENTS_BACKFILL)
+
+
+def _seed_service_catalogue(engine: Engine) -> None:
+    from app.services.catalogue_seed import seed_standard_services  # local import: services import models
+
+    try:
+        with Session(engine) as db:
+            seed_standard_services(db)
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 - never block startup over the catalogue
+        logger.error("Adding the standard service list failed: %s", exc)
 
 
 def _ensure_house_agent(engine: Engine) -> None:

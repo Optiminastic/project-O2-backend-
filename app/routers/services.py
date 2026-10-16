@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, require_roles
 from app.core.rbac import NON_EXEC
 from app.database import get_db
-from app.models import ClientInvoice, Service, User
+from app.models import ClientInvoice, Project, Service, User
 from app.schemas.service import ServiceCreate, ServiceOut, ServiceUpdate
 from app.services.audit import log_action
 from app.services.service_catalog import assert_title_free
@@ -71,6 +71,11 @@ def delete_service(service_id: int, db: Session = Depends(get_db), user: User = 
     if used:
         raise HTTPException(
             409, f"'{service.title}' is used on {used} invoice(s) and must stay on record. Deactivate it instead."
+        )
+    projects = db.query(Project).filter(Project.service_id == service.id).count()
+    if projects:
+        raise HTTPException(
+            409, f"'{service.title}' is the service of {projects} project(s). Deactivate it instead."
         )
     db.delete(service)
     log_action(db, user, "Deleted service", "Service", service_id, service.title)

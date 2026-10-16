@@ -8,7 +8,8 @@ from sqlalchemy import text
 from app.database import engine
 from app.models import AuditLog, Vendor, VendorAllocation, VendorInvoice
 from app.services.numbering import business_date, financial_year, month_end
-from tests.conftest import auth_header
+from app.services.projects import default_report_date
+from tests.conftest import auth_header, default_service_id
 
 
 @pytest.fixture
@@ -31,6 +32,7 @@ def project_body(client_row, vendors, **overrides):
         "brand": "Axis Bank",
         "description": "Survey 2,000 customers across 8 cities.",
         "client_id": client_row.id,
+        "service_id": default_service_id(),
         "budget": 500000,
         "start_date": "2026-10-01",
         "end_date": "2026-11-20",
@@ -57,8 +59,8 @@ def test_project_holds_its_client_vendors_and_cost(client, users, client_row, ve
     assert p["committed_cost"] == 400000
     assert p["remaining_budget"] == 100000
     assert p["over_budget"] is False
-    # Report is due on the last day of the end date's month unless chosen.
-    assert p["expected_report_date"] == "2026-11-30"
+    # Report is due on the 25th of the month after the start month unless chosen.
+    assert p["expected_report_date"] == "2026-11-25"
     assert db_audit(client, "Created project")
 
 
@@ -74,9 +76,24 @@ def test_report_date_can_be_chosen(client, users, client_row, vendors):
     assert p["expected_report_date"] == "2026-12-05"
 
 
-def test_report_date_without_an_end_date_is_this_month_end(client, users, client_row, vendors):
+def test_report_date_without_a_start_is_the_25th_of_next_month(client, users, client_row, vendors):
     p = create(client, users["manager"], project_body(client_row, vendors, start_date=None, end_date=None)).json()
-    assert p["expected_report_date"] == month_end(business_date()).isoformat()
+    assert p["expected_report_date"] == default_report_date(business_date()).isoformat()
+
+
+def test_start_month_is_kept_as_its_first_day(client, users, client_row, vendors):
+    p = create(client, users["manager"], project_body(client_row, vendors, start_date="2026-12-17", end_date=None)).json()
+    assert p["start_date"] == "2026-12-01"
+    assert p["expected_report_date"] == "2027-01-25"
+
+
+def test_code_is_generated_when_left_out(client, users, client_row, vendors):
+    first = create(client, users["manager"], project_body(client_row, vendors, code=None)).json()
+    second_body = project_body(client_row, vendors, code=None)
+    second_body["vendors"] = []
+    second = create(client, users["manager"], second_body).json()
+    assert first["code"].startswith("PRJ-") and second["code"].startswith("PRJ-")
+    assert first["code"] != second["code"]
 
 
 def test_work_shares_cannot_exceed_100_percent(client, users, client_row, vendors):

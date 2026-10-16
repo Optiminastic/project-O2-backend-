@@ -7,18 +7,15 @@ Every failure (unknown, expired, revoked or already-used token) returns the same
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
 from app.models import InvoiceLink
 from app.schemas.invoice import (
     ClientApproveIn,
     ClientChangesIn,
-    PublicClient,
-    PublicCompany,
     PublicInvoice,
     PublicInvoiceView,
 )
-from app.services import invoice_links
+from app.services import invoice_document, invoice_links
 from app.services import invoice_workflow as workflow
 
 router = APIRouter(prefix="/public/invoices", tags=["public"])
@@ -40,27 +37,11 @@ def _actionable_link(db: Session, token: str) -> InvoiceLink:
     return link
 
 
-def _company() -> PublicCompany:
-    return PublicCompany(
-        legal_name=settings.company_legal_name,
-        address=settings.company_address,
-        gstin=settings.company_gstin,
-        state=settings.company_state,
-        pan=settings.company_pan,
-        email=settings.company_email,
-        bank_name=settings.company_bank_name,
-        bank_account=settings.company_bank_account,
-        bank_ifsc=settings.company_bank_ifsc,
-    )
-
-
 def _view(link: InvoiceLink) -> PublicInvoiceView:
     return PublicInvoiceView(
+        **invoice_document.document(link.invoice).model_dump(),
         purpose=link.purpose,
         can_act=invoice_links.can_act(link),
-        invoice=PublicInvoice.model_validate(link.invoice),
-        client=PublicClient.model_validate(link.invoice.client),
-        company=_company(),
     )
 
 

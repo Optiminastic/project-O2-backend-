@@ -2,15 +2,13 @@ from datetime import date, datetime
 
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
+from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.fields import (
-    GstRate,
     LongText,
     Money,
     Name,
     OptionalBankReference,
-    OptionalSacCode,
     OptionalText,
     PastDate,
     PositiveMoney,
@@ -29,35 +27,63 @@ def _not_past(value: date | None) -> date | None:
 
 DueDate = Annotated[date | None, AfterValidator(_not_past)]
 
+# One line per service; an invoice bills at most this many.
+MAX_LINES = 50
+
+
+class InvoiceLineIn(BaseModel):
+    """One of the project's services and the amount billed for it (before GST)."""
+
+    service_id: int
+    taxable_value: PositiveMoney
+    # Left empty, the service title is printed.
+    description: OptionalText = None
+
+
+Lines = Annotated[list[InvoiceLineIn], Field(min_length=1, max_length=MAX_LINES)]
+
 
 class InvoiceCreate(BaseModel):
-    """Every new invoice is a proforma draft. Numbers, dates and stages are set by the server."""
+    """Every new invoice is a proforma draft. Numbers and stages are set by the server.
 
-    client_id: int
+    Bill the project's services with ``lines``, or send one ``taxable_value`` to bill
+    its first service.
+    """
+
+    # The project billed: the client and the services (with SAC code and GST rate) come from it.
+    project_id: int
+    # The proforma date: today, or backdated within the current month.
+    proforma_date: date | None = None
     agent_id: int | None = None
-    service_id: int
     due_date: DueDate = None
-    # Left empty, these come from the chosen service.
+    lines: Lines | None = None
+    taxable_value: PositiveMoney | None = None
     service_description: OptionalText = None
-    sac_code: OptionalSacCode = None
-    taxable_value: PositiveMoney
-    gst_rate: GstRate | None = None
+    # Decided by the client's GSTIN state when it has one; this choice counts only without a GSTIN.
     is_interstate: bool = False
     tds_rate: TdsRate = DEFAULT_CLIENT_TDS_RATE
     supporting_document: OptionalText = None
     internal_remarks: OptionalText = None
 
+    @model_validator(mode="after")
+    def _amount_given(self):
+        if self.lines is None and self.taxable_value is None:
+            raise ValueError("Enter the amount for at least one service.")
+        return self
+
 
 class InvoiceUpdate(BaseModel):
-    client_id: int | None = None
+    # Moving a proforma to another project re-copies its client and service details.
+    project_id: int | None = None
+    proforma_date: date | None = None
     agent_id: int | None = None
-    service_id: int | None = None
     # Not checked against today: an overdue invoice keeps its original due date when edited.
     due_date: date | None = None
-    service_description: OptionalText = None
-    sac_code: OptionalSacCode = None
+    # When sent, replaces the invoice's lines.
+    lines: Lines | None = None
+    # Single-amount edit, for an invoice with one line.
     taxable_value: PositiveMoney | None = None
-    gst_rate: GstRate | None = None
+    service_description: OptionalText = None
     is_interstate: bool | None = None
     tds_rate: TdsRate | None = None
     supporting_document: OptionalText = None
@@ -66,19 +92,27 @@ class InvoiceUpdate(BaseModel):
 
 
 class PaymentCreate(BaseModel):
-    """A client payment. It is always received by bank, so the mode is not chosen."""
+    """A client payment. It is always received by bank, so the mode is not chosen.
+
+    Name the bank with ``bank_account_id`` (one of ours, from the Banks page), or
+    with a typed ``bank_name``.
+    """
 
     amount: PositiveMoney
     payment_date: PastDate
-    bank_name: Name
+    bank_account_id: int | None = None
+    bank_name: Name | None = None
     bank_reference: OptionalBankReference = None
-    tds_deducted: Money = 0.0
+    # Left out, the invoice's TDS is counted as deducted once the cash clears the rest.
+    tds_deducted: Money | None = None
     gst_component: Money = 0.0
     remarks: OptionalText = None
     attachment: OptionalText = None
 
     @model_validator(mode="after")
     def _gst_within_amount(self):
+        if self.bank_account_id is None and not self.bank_name:
+            raise ValueError("Choose the bank the money was received into.")
         if self.gst_component > self.amount:
             raise ValueError("The GST component cannot be more than the amount received.")
         return self
@@ -93,11 +127,27 @@ class PaymentOut(BaseModel):
     payment_date: date
     payment_mode: PaymentMode
     bank_name: str | None
+    bank_account_id: int | None
     bank_reference: str | None
     tds_deducted: float
     gst_component: float
     remarks: str | None
     attachment: str | None
+
+
+class InvoiceLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    service_id: int | None
+    service_title: str
+    description: str | None
+    sac_code: str | None
+    gst_rate: float
+    taxable_value: float
+    gst_amount: float
+    cgst: float
+    sgst: float
+    igst: float
 
 
 class InvoiceOut(BaseModel):
@@ -108,6 +158,7 @@ class InvoiceOut(BaseModel):
     proforma_number: str | None
     display_number: str
     is_issued: bool
+    project_id: int | None
     client_id: int
     agent_id: int | None
     invoice_date: date | None
@@ -146,6 +197,7 @@ class InvoiceOut(BaseModel):
     issued_by_id: int | None
     issued_at: datetime | None
     created_at: datetime
+    lines: list[InvoiceLineOut] = Field(validation_alias=AliasChoices("line_items", "lines"))
 
 
 class InvoiceDetail(InvoiceOut):
@@ -201,6 +253,7 @@ class PublicCompany(BaseModel):
     bank_name: str
     bank_account: str
     bank_ifsc: str
+    bank_branch: str
 
 
 class PublicClient(BaseModel):
@@ -238,23 +291,31 @@ class PublicInvoice(BaseModel):
     status: InvoiceStatus
     client_approved_at: datetime | None
     client_approver_name: str | None
+    lines: list[InvoiceLineOut] = Field(validation_alias=AliasChoices("line_items", "lines"))
 
 
-class PublicInvoiceView(BaseModel):
-    purpose: InvoiceLinkPurpose
-    can_act: bool
+class InvoiceDocumentView(BaseModel):
+    """Everything printed on the proforma / tax invoice document."""
+
     invoice: PublicInvoice
     client: PublicClient
     company: PublicCompany
+    place_of_supply: str | None
+    amount_in_words: str
+
+
+class PublicInvoiceView(InvoiceDocumentView):
+    purpose: InvoiceLinkPurpose
+    can_act: bool
 
 
 class BulkRowOut(BaseModel):
     """One spreadsheet row of a bulk upload, checked but not yet created."""
 
     row: int
-    client_input: str
+    project_input: str
+    project_code: str | None
     client_name: str | None
-    service_input: str
     service_title: str | None
     amount: float | None
     gst_rate: float | None

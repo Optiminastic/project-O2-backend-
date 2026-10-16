@@ -47,6 +47,11 @@ _INCREMENT = text(
 )
 
 
+def next_in_series(db: Session, series: str) -> int:
+    """Reserve the next value of a counter that never resets. The caller owns the commit."""
+    return db.execute(_INCREMENT, {"series": series}).scalar_one()
+
+
 def next_number(db: Session, prefix: str, on: date) -> str:
     """Reserve the next number in ``<prefix>/<FY>``. The caller owns the commit."""
     series = f"{prefix}/{financial_year(on)}"

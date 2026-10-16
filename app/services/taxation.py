@@ -3,9 +3,11 @@
 from dataclasses import dataclass
 from datetime import date
 
-# Clients deduct TDS on professional fees under section 194J at 10%. TDS always
-# applies to client invoices; only the rate is set per invoice.
-DEFAULT_CLIENT_TDS_RATE = 10.0
+from app.services.identifiers import GSTIN_STATE_CODES
+
+# Clients usually deduct 2% TDS (section 194C, or 194J for technical services).
+# TDS always applies to client invoices; only the rate is set per invoice.
+DEFAULT_CLIENT_TDS_RATE = 2.0
 # The largest single amount accepted: ₹10,000 crore. Anything above is a typo.
 MAX_AMOUNT = 100_000_000_000.0
 # Rupees carry two decimals (paise).
@@ -49,6 +51,19 @@ def compute_gst(taxable_value: float, gst_rate: float, is_interstate: bool) -> G
         igst=igst,
         total=total,
     )
+
+
+def is_interstate_supply(client_gstin: str | None, company_gstin: str, requested: bool) -> bool:
+    """IGST applies when the client is registered in another state than ours.
+
+    The state is the first two digits of the GSTIN. Without a client GSTIN (or with
+    one saved before GSTINs were checked) the state cannot be known, so what the
+    user chose stands.
+    """
+    client_state, our_state = (client_gstin or "")[:2], (company_gstin or "")[:2]
+    if client_state in GSTIN_STATE_CODES and our_state in GSTIN_STATE_CODES:
+        return client_state != our_state
+    return requested
 
 
 def compute_tds(base_amount: float, tds_rate: float, applicable: bool) -> float:

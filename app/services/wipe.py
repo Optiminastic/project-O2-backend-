@@ -9,9 +9,9 @@ Three properties hold it together:
 * **Nothing is deleted without a verified backup.** ``services.backup`` raises if
   it cannot produce and read back a dump, and this module treats any such
   failure as "stop".
-* **The delete is one transaction in a fixed order.** The schema has no
-  ``ON DELETE CASCADE`` anywhere, so an arbitrary order raises a foreign-key
-  violation partway through and leaves the database half-erased.
+* **The delete is one transaction in a fixed order.** Only line tables
+  (invoice lines, project services) cascade, so an arbitrary order raises a
+  foreign-key violation partway through and leaves the database half-erased.
 * **Two tables survive.** See RETAINED below; both omissions are deliberate and
   load-bearing.
 """
@@ -38,9 +38,9 @@ logger = logging.getLogger("o2.wipe")
 # a direct API call is held to the same standard as a tap in the UI.
 CONFIRM_PHRASE = "ERASE PROJECT O2"
 
-# Children before parents. There are no ON DELETE CASCADE constraints in this
-# schema (only two SET NULLs on agent_id), so this order is load-bearing: get it
-# wrong and Postgres raises a foreign-key violation mid-transaction.
+# Children before parents. Only the line tables cascade (plus two SET NULLs on
+# agent_id), so this order is load-bearing: get it wrong and Postgres raises a
+# foreign-key violation mid-transaction.
 DELETE_ORDER: tuple[str, ...] = (
     "bank_transactions",
     "approval_actions",
@@ -49,13 +49,17 @@ DELETE_ORDER: tuple[str, ...] = (
     "vendor_reports",
     "vendor_invoices",
     "payments",
+    "company_banks",
     "invoice_links",
+    "invoice_lines",
+    "client_invoices",
     "project_vendors",
+    "project_services",
     "projects",
     "vendor_allocations",
     "vendor_bank_accounts",
-    "client_invoices",
     "services",
+    "data_upgrades",
     "bank_statements",
     "vendors",
     "clients",

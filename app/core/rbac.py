@@ -7,6 +7,7 @@ Mirror of the frontend `lib/rbac.ts`.
     Agents         ✓    ✓    ✓    –
     Services       ✓    ✓    ✓    –   (edit; every role lists active services)
     Projects       ✓    ✓    ✓    –   (edit and send work orders; every role views)
+    Banks          ✓    ✓    ✓    –   (add and edit; every role lists active banks)
     Taxation       ✓    ✓    ✓    –
     Approvals      ✓    ✓    ✓    –
     Audit Trail    ✓    –    –    –

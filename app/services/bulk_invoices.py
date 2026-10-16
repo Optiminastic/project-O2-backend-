@@ -7,32 +7,37 @@ neither leaves half its rows behind nor consumes proforma numbers.
 
 from __future__ import annotations
 
-import csv
 import io
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from fastapi import HTTPException, status
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.worksheet.datavalidation import DataValidation
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models import Client, Service
+from app.config import settings
+from app.models import Client, Project, Service
+from app.services import spreadsheet
 from app.services.numbering import business_date
-from app.services.taxation import AMOUNT_DECIMALS, DEFAULT_CLIENT_TDS_RATE, MAX_AMOUNT, MAX_TDS_RATE, compute_gst
+from app.services.spreadsheet import MAX_FILE_BYTES, MAX_ROWS, TableSpec, has_data, text_of
+from app.services.taxation import (
+    AMOUNT_DECIMALS,
+    DEFAULT_CLIENT_TDS_RATE,
+    MAX_AMOUNT,
+    MAX_TDS_RATE,
+    compute_gst,
+    is_interstate_supply,
+)
 
-MAX_ROWS = 500
-MAX_FILE_BYTES = 2 * 1024 * 1024
 FIRST_DATA_ROW = 2  # row 1 holds the headers, as a spreadsheet user sees it
 
-CLIENT, SERVICE, AMOUNT = "Client", "Service", "Amount"
+PROJECT, AMOUNT, SERVICE = "Project", "Amount", "Service"
 DESCRIPTION, DUE_DATE, TDS, INTERSTATE, REMARKS = "Description", "Due date", "TDS %", "Interstate", "Remarks"
-REQUIRED_COLUMNS = (CLIENT, SERVICE, AMOUNT)
-COLUMNS = REQUIRED_COLUMNS + (DESCRIPTION, DUE_DATE, TDS, INTERSTATE, REMARKS)
+REQUIRED_COLUMNS = (PROJECT, AMOUNT)
+COLUMNS = REQUIRED_COLUMNS + (SERVICE, DESCRIPTION, DUE_DATE, TDS, INTERSTATE, REMARKS)
 
-GSTIN_LENGTH = 15
 YES = {"yes", "y", "true", "1"}
 NO = {"no", "n", "false", "0", ""}
 # Indian paperwork writes dates day first; ISO is accepted too.
@@ -42,9 +47,9 @@ DATE_FORMATS = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y")
 @dataclass
 class RowCheck:
     row: int
-    client_input: str
-    service_input: str
-    client: Client | None = None
+    project_input: str
+    project: Project | None = None
+    # The project's service this row bills.
     service: Service | None = None
     amount: float | None = None
     description: str | None = None
@@ -55,6 +60,11 @@ class RowCheck:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
+    # The project decides who is billed.
+    @property
+    def client(self) -> Client | None:
+        return self.project.client if self.project else None
+
     @property
     def gst(self):
         if self.amount is None or self.service is None:
@@ -64,125 +74,81 @@ class RowCheck:
 
 # ---------- reading the file ----------
 
+SPEC = TableSpec(required=REQUIRED_COLUMNS, columns=COLUMNS, sheet_name="Invoices", row_noun="invoice rows")
+
+
 def read_rows(filename: str, content: bytes) -> list[dict[str, object]]:
-    """Rows keyed by column name, blank rows dropped. Raises 400 if the file itself is unusable."""
-    if len(content) > MAX_FILE_BYTES:
-        raise _bad_file("The file is larger than 2 MB. Split it into smaller uploads.")
-    name = filename.lower()
-    if name.endswith(".xlsx"):
-        table = _xlsx_table(content)
-    elif name.endswith(".csv"):
-        table = _csv_table(content)
-    else:
-        raise _bad_file("Upload the invoice template as an Excel (.xlsx) or CSV file.")
-    if not table:
-        raise _bad_file("The file is empty. Use the template's header row.")
-
-    headers = [str(h or "").strip().lower() for h in table[0]]
-    missing = [c for c in REQUIRED_COLUMNS if c.lower() not in headers]
-    if missing:
-        raise _bad_file(f"Missing column(s): {', '.join(missing)}. Use the template's header row.")
-    index = {c: headers.index(c.lower()) for c in COLUMNS if c.lower() in headers}
-
-    rows = []
-    for values in table[1:]:
-        record = {c: values[i] if i < len(values) else None for c, i in index.items()}
-        rows.append(record)
-    if not any(_has_data(r) for r in rows):
-        raise _bad_file("The file has no invoice rows under the header.")
-    if sum(_has_data(r) for r in rows) > MAX_ROWS:
-        raise _bad_file(f"A single upload can hold at most {MAX_ROWS} invoices. Split the file.")
-    return rows
-
-
-def _xlsx_table(content: bytes) -> list[list[object]]:
-    try:
-        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    except Exception:  # noqa: BLE001 - any parse failure means the same thing to the user
-        raise _bad_file("This Excel file could not be read. Save it as .xlsx and try again.")
-    ws = wb["Invoices"] if "Invoices" in wb.sheetnames else wb.worksheets[0]
-    return [list(r) for r in ws.iter_rows(values_only=True)]
-
-
-def _csv_table(content: bytes) -> list[list[object]]:
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise _bad_file("Save the CSV with UTF-8 encoding and try again.")
-    return [r for r in csv.reader(io.StringIO(text))]
-
-
-def _has_data(record: dict[str, object]) -> bool:
-    return any(_text(v) for v in record.values())
-
-
-def _bad_file(message: str) -> HTTPException:
-    return HTTPException(status.HTTP_400_BAD_REQUEST, message)
+    """Rows keyed by column name. Raises 400 if the file itself is unusable."""
+    return spreadsheet.read_rows(SPEC, filename, content)
 
 
 # ---------- checking each row ----------
 
 def check_rows(db: Session, records: list[dict[str, object]]) -> list[RowCheck]:
-    clients = _ClientLookup(db.query(Client).all())
-    services = {s.title.strip().lower(): s for s in db.query(Service).all()}
+    projects = {
+        _key(p.code): p
+        for p in db.query(Project).options(selectinload(Project.client), selectinload(Project.services)).all()
+    }
     today = business_date()
 
     checks = []
     for offset, record in enumerate(records):
-        if not _has_data(record):
+        if not has_data(record):
             continue
         check = RowCheck(
             row=FIRST_DATA_ROW + offset,
-            client_input=_text(record.get(CLIENT)),
-            service_input=_text(record.get(SERVICE)),
-            description=_text(record.get(DESCRIPTION)) or None,
-            remarks=_text(record.get(REMARKS)) or None,
+            project_input=text_of(record.get(PROJECT)),
+            description=text_of(record.get(DESCRIPTION)) or None,
+            remarks=text_of(record.get(REMARKS)) or None,
         )
-        check.client = clients.find(check.client_input, check.errors)
-        check.service = _find_service(services, check.service_input, check.errors)
+        check.project = _find_project(projects, check.project_input, check.errors)
+        if check.project:
+            check.service = _find_service(check.project, text_of(record.get(SERVICE)), check.errors)
         check.amount = _amount(record.get(AMOUNT), check.errors)
         check.due_date = _due_date(record.get(DUE_DATE), today, check.errors)
         check.tds_rate = _tds_rate(record.get(TDS), check.errors)
-        check.is_interstate = _yes_no(record.get(INTERSTATE), check.errors)
+        # A client with a GSTIN is billed by its state; the column counts only without one.
+        requested = _yes_no(record.get(INTERSTATE), check.errors)
+        gstin = check.client.gst_number if check.client else None
+        check.is_interstate = is_interstate_supply(gstin, settings.company_gstin, requested)
         checks.append(check)
 
     _flag_repeats(checks)
     return checks
 
 
-class _ClientLookup:
-    def __init__(self, clients: list[Client]):
-        self.by_gstin = {c.gst_number.strip().upper(): c for c in clients if c.gst_number}
-        self.by_name: dict[str, list[Client]] = {}
-        for c in clients:
-            self.by_name.setdefault(_key(c.business_name), []).append(c)
-
-    def find(self, value: str, errors: list[str]) -> Client | None:
-        if not value:
-            errors.append("Client is required (name or GSTIN).")
-            return None
-        if len(value) == GSTIN_LENGTH and value.upper() in self.by_gstin:
-            return self.by_gstin[value.upper()]
-        matches = self.by_name.get(_key(value), [])
-        if len(matches) == 1:
-            return matches[0]
-        if matches:
-            errors.append(f"{len(matches)} clients are called '{value}'; use their GSTIN instead.")
-        else:
-            errors.append(f"No client called '{value}'. Check the spelling or add the client first.")
-        return None
-
-
-def _find_service(services: dict[str, Service], value: str, errors: list[str]) -> Service | None:
+def _find_project(projects: dict[str, Project], value: str, errors: list[str]) -> Project | None:
     if not value:
-        errors.append("Service is required.")
+        errors.append("Project is required (its code).")
         return None
-    service = services.get(_key(value))
-    if service is None:
-        errors.append(f"No service called '{value}'. Pick one from the Services page.")
+    project = projects.get(_key(value))
+    if project is None:
+        errors.append(f"No project with code '{value}'. Check the code or create the project first.")
         return None
+    if project.client is None:
+        errors.append(f"Project {project.code} has no client. Add one before invoicing.")
+        return None
+    if not project.services:
+        errors.append(f"Project {project.code} has no service. Choose one before invoicing.")
+        return None
+    return project
+
+
+def _find_service(project: Project, value: str, errors: list[str]) -> Service | None:
+    """The row's service: named in the Service column, or the project's only service."""
+    if not value:
+        if len(project.services) > 1:
+            names = ", ".join(s.title for s in project.services)
+            errors.append(f"Project {project.code} bills several services ({names}). Name one in the Service column.")
+            return None
+        service = project.services[0]
+    else:
+        service = next((s for s in project.services if _key(s.title) == _key(value)), None)
+        if service is None:
+            errors.append(f"'{value}' is not a service of project {project.code}.")
+            return None
     if not service.is_active:
-        errors.append(f"'{service.title}' is deactivated; choose another service.")
+        errors.append(f"'{service.title}' is deactivated.")
         return None
     return service
 
@@ -205,7 +171,7 @@ def _amount(value: object, errors: list[str]) -> float | None:
 
 
 def _due_date(value: object, today: date, errors: list[str]) -> date | None:
-    if value is None or _text(value) == "":
+    if value is None or text_of(value) == "":
         return None  # defaults to the end of the month when the proforma is created
     due = _date(value)
     if due is None:
@@ -218,7 +184,7 @@ def _due_date(value: object, today: date, errors: list[str]) -> date | None:
 
 
 def _tds_rate(value: object, errors: list[str]) -> float:
-    if value is None or _text(value) == "":
+    if value is None or text_of(value) == "":
         return DEFAULT_CLIENT_TDS_RATE
     rate = _number(value)
     if rate is None or not 0 <= rate <= MAX_TDS_RATE:
@@ -230,7 +196,7 @@ def _tds_rate(value: object, errors: list[str]) -> float:
 def _yes_no(value: object, errors: list[str]) -> bool:
     if isinstance(value, bool):
         return value
-    word = _text(value).lower()
+    word = text_of(value).lower()
     if word in YES:
         return True
     if word not in NO:
@@ -239,23 +205,19 @@ def _yes_no(value: object, errors: list[str]) -> bool:
 
 
 def _flag_repeats(checks: list[RowCheck]) -> None:
-    """The same client, service and amount twice is usually a copy-paste slip, but can be genuine."""
+    """The same project and amount twice is usually a copy-paste slip, but can be genuine."""
     seen: dict[tuple, int] = {}
     for c in checks:
-        if c.client is None or c.service is None or c.amount is None:
+        if c.project is None or c.amount is None:
             continue
-        key = (c.client.id, c.service.id, c.amount)
+        key = (c.project.id, c.amount)
         if key in seen:
-            c.warnings.append(f"Same client, service and amount as row {seen[key]}. Check it is not a duplicate.")
+            c.warnings.append(f"Same project and amount as row {seen[key]}. Check it is not a duplicate.")
         else:
             seen[key] = c.row
 
 
 # ---------- value parsing ----------
-
-def _text(value: object) -> str:
-    return "" if value is None else str(value).strip()
-
 
 def _key(value: str) -> str:
     return " ".join(value.lower().split())
@@ -266,7 +228,7 @@ def _number(value: object) -> float | None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
-    cleaned = re.sub(r"[,\s₹]|^rs\.?", "", _text(value), flags=re.IGNORECASE)
+    cleaned = re.sub(r"[,\s₹]|^rs\.?", "", text_of(value), flags=re.IGNORECASE)
     try:
         return float(cleaned)
     except ValueError:
@@ -278,7 +240,7 @@ def _date(value: object) -> date | None:
         return value.date()
     if isinstance(value, date):
         return value
-    text = _text(value)
+    text = text_of(value)
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(text, fmt).date()
@@ -290,32 +252,34 @@ def _date(value: object) -> date | None:
 # ---------- the template ----------
 
 def build_template(db: Session) -> bytes:
-    """An Excel file with the header row, dropdowns of real clients and services, and instructions."""
+    """An Excel file with the header row, a dropdown of invoiceable projects, and instructions."""
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Invoices"
     sheet.append(list(COLUMNS))
     for cell in sheet[1]:
         cell.font = Font(bold=True)
-    for letter, width in zip("ABCDEFGH", (32, 28, 14, 36, 14, 8, 11, 30)):
+    for letter, width in zip("ABCDEFGH", (24, 14, 28, 36, 14, 8, 11, 30)):
         sheet.column_dimensions[letter].width = width
     sheet.freeze_panes = "A2"
 
-    clients = sorted(c.business_name for c in db.query(Client).all())
-    services = sorted(s.title for s in db.query(Service).filter(Service.is_active.is_(True)).all())
+    projects = (
+        db.query(Project)
+        .options(selectinload(Project.client), selectinload(Project.services))
+        .filter(Project.client_id.is_not(None), Project.services.any())
+        .order_by(Project.code)
+        .all()
+    )
     lists = wb.create_sheet("Lists")
-    lists.append(["Clients", "Services"])
-    for i in range(max(len(clients), len(services))):
-        lists.append([clients[i] if i < len(clients) else None, services[i] if i < len(services) else None])
+    lists.append(["Project code", "Title", "Client", "Services"])
+    for p in projects:
+        lists.append([p.code, p.title, p.client.business_name, ", ".join(s.title for s in p.services)])
 
     last_row = MAX_ROWS + 1
-    for column, source, count in (("A", "A", len(clients)), ("B", "B", len(services))):
-        if count:
-            # Clients may also be typed as a GSTIN, so a value outside the list is allowed.
-            dv = DataValidation(type="list", formula1=f"=Lists!${source}$2:${source}${count + 1}",
-                                allow_blank=True, showErrorMessage=column == "B")
-            sheet.add_data_validation(dv)
-            dv.add(f"{column}2:{column}{last_row}")
+    if projects:
+        dv = DataValidation(type="list", formula1=f"=Lists!$A$2:$A${len(projects) + 1}", allow_blank=True)
+        sheet.add_data_validation(dv)
+        dv.add(f"A2:A{last_row}")
     yes_no = DataValidation(type="list", formula1='"Yes,No"', allow_blank=True)
     sheet.add_data_validation(yes_no)
     yes_no.add(f"G2:G{last_row}")
@@ -331,15 +295,15 @@ def build_template(db: Session) -> bytes:
 
 
 _INSTRUCTIONS = (
-    "One row = one proforma invoice. Rows can be for one client or many.",
+    "One row = one proforma invoice. Rows can be for one project or many.",
     "",
-    "Client (required): the client's name exactly as in Project O2, or their 15-character GSTIN.",
-    "Service (required): a service from the Services page. Its GST rate and SAC code are used.",
+    "Project (required): the project's code (see the Lists sheet). Its client is billed.",
     "Amount (required): the value before GST, in rupees. GST is added automatically.",
-    "Description (optional): leave empty to use the service's description.",
+    "Service (needed when the project bills several services): which of its services this row bills.",
+    "Description (optional): leave empty to print the service's title.",
     "Due date (optional): day first, e.g. 31/10/2026. Empty means the end of this month.",
     f"TDS % (optional): the TDS the client will deduct. Empty means {DEFAULT_CLIENT_TDS_RATE:g}%.",
-    "Interstate (optional): Yes if the client is in another state (IGST instead of CGST + SGST). Empty means No.",
+    "Interstate (optional): only for clients without a GSTIN. With a GSTIN, its state decides (IGST outside Maharashtra).",
     "Remarks (optional): internal note, not shown to the client.",
     "",
     f"At most {MAX_ROWS} rows per file. Nothing is created until every row is correct.",

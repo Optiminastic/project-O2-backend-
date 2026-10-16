@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, model_validator
 
-from app.schemas.fields import Name, OptionalCin, OptionalGstin, OptionalName, OptionalPhone, OptionalText
+from app.schemas.fields import Name, OptionalCin, OptionalGstin, OptionalName, OptionalPhone, OptionalText, OptionalUdyam
 
 
 class ClientCreate(BaseModel):
@@ -13,9 +13,18 @@ class ClientCreate(BaseModel):
     billing_address: OptionalText = None
     gst_number: OptionalGstin = None
     coi: OptionalCin = None
+    msme: bool = False
+    # The Udyam registration number, kept only for an MSME client.
+    msme_number: OptionalUdyam = None
     category: OptionalName = None
     notes: OptionalText = None
     agent_id: int | None = None
+
+    @model_validator(mode="after")
+    def _msme_number_only_for_msme(self):
+        if not self.msme:
+            self.msme_number = None
+        return self
 
 
 class ClientUpdate(BaseModel):
@@ -26,6 +35,8 @@ class ClientUpdate(BaseModel):
     billing_address: OptionalText = None
     gst_number: OptionalGstin = None
     coi: OptionalCin = None
+    msme: bool | None = None
+    msme_number: OptionalUdyam = None
     category: OptionalName = None
     notes: OptionalText = None
     agent_id: int | None = None
@@ -42,6 +53,8 @@ class ClientOut(BaseModel):
     billing_address: str | None = None
     gst_number: str | None = None
     coi: str | None = None
+    msme: bool = False
+    msme_number: str | None = None
     category: str | None = None
     notes: str | None = None
     agent_id: int | None = None

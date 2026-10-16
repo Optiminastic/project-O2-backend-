@@ -1,10 +1,10 @@
-"""Service catalogue rules shared by the services and invoices routers."""
+"""Service catalogue rules shared by the services, projects and invoices routers."""
 
 from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Service
+from app.models import Project, Service
 
 
 def assert_title_free(db: Session, title: str, exclude_id: int | None = None) -> None:
@@ -25,16 +25,23 @@ def usable_service(db: Session, service_id: int) -> Service:
     return service
 
 
-def service_snapshot(service: Service, overrides: dict) -> dict:
-    """Invoice fields copied from the service. Values the user typed on the invoice win."""
-    def pick(field: str, default):
-        value = overrides.get(field)
-        return default if value is None or value == "" else value
+def usable_project(db: Session, project_id: int) -> Project:
+    """A project that may be invoiced: it must exist and have a client and at least one service."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+    if project.client_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Project {project.code} has no client. Add one before invoicing.")
+    if not project.services:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Project {project.code} has no service. Choose one before invoicing."
+        )
+    return project
 
-    return {
-        "service_id": service.id,
-        "service_title": service.title,
-        "service_description": pick("service_description", service.description),
-        "sac_code": pick("sac_code", service.sac_code),
-        "gst_rate": pick("gst_rate", service.gst_rate),
-    }
+
+def usable_services(db: Session, service_ids: list[int]) -> list[Service]:
+    """Active catalogue services for a project, in the order given, each once."""
+    unique = list(dict.fromkeys(service_ids))
+    if not unique:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose at least one service.")
+    return [usable_service(db, sid) for sid in unique]

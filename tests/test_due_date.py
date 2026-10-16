@@ -1,10 +1,11 @@
-"""Invoices are due at the end of the month by default."""
+"""A proforma is due at month end by default; a tax invoice by the 15th of the next month."""
 
 from datetime import date
 
 from app.models import ClientInvoice
+from app.services.invoice_workflow import payment_due_date, tax_invoice_date
 from app.services.numbering import business_date, month_end
-from tests.conftest import auth_header, default_service_id
+from tests.conftest import auth_header, project_id_for
 
 
 def test_month_end_handles_month_lengths_and_leap_years():
@@ -16,7 +17,7 @@ def test_month_end_handles_month_lengths_and_leap_years():
 
 
 def create(client, user, client_row, **overrides):
-    body = {"client_id": client_row.id, "taxable_value": 1000, "service_id": default_service_id(), **overrides}
+    body = {"project_id": project_id_for(client_row), "taxable_value": 1000, **overrides}
     res = client.post("/api/invoices", json=body, headers=auth_header(user))
     assert res.status_code == 201, res.text
     return res.json()
@@ -42,22 +43,48 @@ def test_duplicate_gets_a_fresh_month_end_due_date(client, users, client_row, db
     assert res.json()["due_date"] == month_end(business_date()).isoformat()
 
 
-def test_issue_moves_a_past_due_date_to_the_end_of_the_issue_month(client, users, client_row, db):
+def _issue(client, users, inv):
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
+    client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
+    res = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
+    assert res.status_code == 200, res.text
+    return res.json()["invoice"]
+
+
+def test_tax_invoice_is_due_on_the_15th_of_the_next_month(client, users, client_row):
+    inv = create(client, users["exec"], client_row, due_date="2099-01-15")
+    issued = _issue(client, users, inv)
+    assert issued["due_date"] == payment_due_date(business_date()).isoformat()
+
+
+def test_tax_invoice_takes_a_backdated_proforma_date_from_this_month(client, users, client_row, db):
     inv = create(client, users["exec"], client_row)
-    # Simulate a proforma raised last month whose month-end has already passed.
+    first = business_date().replace(day=1)
     row = db.get(ClientInvoice, inv["id"])
+    row.proforma_date = first
+    db.commit()
+    issued = _issue(client, users, inv)
+    assert issued["invoice_date"] == first.isoformat()
+    assert issued["due_date"] == payment_due_date(first).isoformat()
+
+
+def test_proforma_from_an_earlier_month_is_issued_today(client, users, client_row, db):
+    inv = create(client, users["exec"], client_row)
+    row = db.get(ClientInvoice, inv["id"])
+    row.proforma_date = date(2020, 1, 31)
     row.due_date = date(2020, 1, 31)
     db.commit()
-
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["exec"])).json()
-    client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
-    issued = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"])).json()["invoice"]
-    assert issued["due_date"] == month_end(business_date()).isoformat()
+    issued = _issue(client, users, inv)
+    assert issued["invoice_date"] == business_date().isoformat()
 
 
-def test_issue_keeps_a_future_due_date(client, users, client_row):
-    inv = create(client, users["exec"], client_row, due_date="2099-01-15")
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["exec"])).json()
-    client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
-    issued = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"])).json()["invoice"]
-    assert issued["due_date"] == "2099-01-15"
+def test_payment_due_date_rolls_over_the_year():
+    assert payment_due_date(date(2026, 12, 3)) == date(2027, 1, 15)
+    assert payment_due_date(date(2026, 10, 31)) == date(2026, 11, 15)
+
+
+def test_tax_invoice_date_rule():
+    today = date(2026, 10, 16)
+    assert tax_invoice_date(date(2026, 10, 2), today) == date(2026, 10, 2)
+    assert tax_invoice_date(date(2026, 9, 30), today) == today
+    assert tax_invoice_date(None, today) == today

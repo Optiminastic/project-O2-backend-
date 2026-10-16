@@ -16,8 +16,8 @@ ACCOUNT_NUMBER_PATTERN = r"^[0-9]{9,18}$"
 UDYAM_PATTERN = r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$"
 # Company CIN (21 characters) or LLP identification number (AAA-1234).
 CIN_PATTERN = r"^(?:[LU][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}|[A-Z]{3}-[0-9]{4})$"
-# Services are classified under SAC: 6 digits starting with 99.
-SAC_PATTERN = r"^99[0-9]{4}$"
+# SAC / HSN classification code: 4 to 8 digits (SAC codes for services start with 99).
+SAC_PATTERN = r"^[0-9]{4,8}$"
 # GST rule 46: an invoice number is at most 16 letters, digits, "-" or "/".
 INVOICE_NUMBER_PATTERN = r"^[A-Z0-9/-]{1,16}$"
 # UTR / RRN / cheque number: NEFT 16, RTGS 22, IMPS 12, cheque 6.

@@ -6,9 +6,10 @@ from app.core.deps import get_current_user, require_roles
 from app.core.period import Period, month_period
 from app.core.rbac import NON_EXEC
 from app.database import get_db
-from app.models import Client, Project, ProjectVendor, User, VendorInvoice
+from app.models import Client, ClientInvoice, Project, ProjectVendor, User, VendorInvoice
 from app.models.mixins import utcnow
 from app.schemas.project import (
+    ProjectClientInvoiceOut,
     ProjectCreate,
     ProjectDetail,
     ProjectOut,
@@ -18,6 +19,7 @@ from app.schemas.project import (
 )
 from app.services import projects as rules
 from app.services.audit import log_action
+from app.services.service_catalog import usable_services
 from app.services.email import send_work_order_email
 from app.services.invoice_workflow import format_inr
 from app.services.work_order import render_work_order_pdf, work_order_filename
@@ -31,7 +33,11 @@ EDIT_ROLES = NON_EXEC
 def _load(db: Session, project_id: int) -> Project:
     project = (
         db.query(Project)
-        .options(selectinload(Project.vendors).selectinload(ProjectVendor.vendor), selectinload(Project.client))
+        .options(
+            selectinload(Project.vendors).selectinload(ProjectVendor.vendor),
+            selectinload(Project.client),
+            selectinload(Project.services),
+        )
         .filter(Project.id == project_id)
         .first()
     )
@@ -49,8 +55,15 @@ def _detail(db: Session, project: Project) -> ProjectDetail:
         .order_by(VendorInvoice.invoice_date.desc(), VendorInvoice.id.desc())
         .all()
     )
+    client_invoices = (
+        db.query(ClientInvoice)
+        .filter(ClientInvoice.project_id == project.id)
+        .order_by(ClientInvoice.created_at.desc())
+        .all()
+    )
     return ProjectDetail(
         **view.model_dump(),
+        client_invoices=[ProjectClientInvoiceOut.model_validate(i) for i in client_invoices],
         vendor_invoices=[
             ProjectVendorInvoiceOut(
                 id=i.id,
@@ -79,7 +92,9 @@ def list_projects(
     user: User = Depends(get_current_user),
 ):
     q = db.query(Project).options(
-        selectinload(Project.vendors).selectinload(ProjectVendor.vendor), selectinload(Project.client)
+        selectinload(Project.vendors).selectinload(ProjectVendor.vendor),
+        selectinload(Project.client),
+        selectinload(Project.services),
     )
     if period:
         # Running at any point in the month: started before it ends and not finished before it starts.
@@ -97,16 +112,20 @@ def create_project(
     user: User = Depends(require_roles(*EDIT_ROLES)),
 ):
     _require_client(db, payload.client_id)
-    rules.assert_dates(payload.start_date, payload.end_date)
-    rules.assert_code_free(db, payload.code)
+    services = usable_services(db, payload.service_ids)
+    start = rules.month_start(payload.start_date)
+    rules.assert_dates(start, payload.end_date)
+    if payload.code:
+        rules.assert_code_free(db, payload.code)
 
     project = Project(
-        **payload.model_dump(exclude={"vendors"}),
+        **payload.model_dump(exclude={"vendors", "service_ids", "service_id", "code", "start_date"}),
+        code=payload.code or rules.next_project_code(db),
+        start_date=start,
         created_by_id=user.id,
     )
-    project.expected_report_date = payload.expected_report_date or rules.default_report_date(
-        payload.start_date, payload.end_date
-    )
+    rules.set_services(project, services)
+    project.expected_report_date = payload.expected_report_date or rules.default_report_date(start)
     rules.replace_vendors(db, project, payload.vendors)
     db.add(project)
     db.flush()
@@ -128,21 +147,31 @@ def update_project(
     user: User = Depends(require_roles(*EDIT_ROLES)),
 ):
     project = _load(db, project_id)
-    changes = payload.model_dump(exclude_unset=True, exclude={"vendors"})
+    changes = payload.model_dump(exclude_unset=True, exclude={"vendors", "service_ids", "service_id"})
     # A project always has a code, title and client; an explicit null leaves them as they are.
-    for required in ("code", "title", "client_id", "budget", "status"):
+    for required in ("code", "title", "client_id", "budget", "contract_value", "status"):
         if changes.get(required, ...) is None:
             changes.pop(required)
+    if "start_date" in changes:
+        changes["start_date"] = rules.month_start(changes["start_date"])
     if "client_id" in changes:
         _require_client(db, changes["client_id"])
+    if payload.service_ids is not None:
+        kept = {s.id for s in project.services}
+        # A service already on the project stays usable even if since deactivated.
+        new_ids = [sid for sid in payload.service_ids if sid not in kept]
+        added = usable_services(db, new_ids) if new_ids else []
+        by_id = {s.id: s for s in [*project.services, *added]}
+        rules.set_services(project, [by_id[sid] for sid in dict.fromkeys(payload.service_ids)])
     if "code" in changes:
         rules.assert_code_free(db, changes["code"], exclude_id=project.id)
     rules.assert_dates(changes.get("start_date", project.start_date), changes.get("end_date", project.end_date))
 
     for field, value in changes.items():
         setattr(project, field, value)
-    if not project.expected_report_date:
-        project.expected_report_date = rules.default_report_date(project.start_date, project.end_date)
+    moved_start = "start_date" in changes and "expected_report_date" not in changes
+    if moved_start or not project.expected_report_date:
+        project.expected_report_date = rules.default_report_date(project.start_date)
     if payload.vendors is not None:
         rules.replace_vendors(db, project, payload.vendors)
     log_action(db, user, "Updated project", "Project", project.id, project.code)
@@ -159,6 +188,8 @@ def delete_project(
     project = _load(db, project_id)
     if rules.has_vendor_invoices(db, project.id):
         raise HTTPException(409, "Vendors have already invoiced this project, so it cannot be deleted.")
+    if rules.has_client_invoices(db, project.id):
+        raise HTTPException(409, "This project has client invoices, so it cannot be deleted.")
     log_action(db, user, "Deleted project", "Project", project.id, f"{project.code} {project.title}")
     db.delete(project)
     db.commit()

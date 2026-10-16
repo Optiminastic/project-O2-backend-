@@ -8,17 +8,41 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Project, ProjectVendor, Vendor, VendorInvoice
-from app.schemas.project import ProjectOut, ProjectVendorIn, ProjectVendorOut
-from app.services.numbering import business_date, month_end, next_number
+from app.models import ClientInvoice, InvoiceStatus, Project, ProjectVendor, Service, Vendor, VendorInvoice
+from app.schemas.project import ProjectOut, ProjectServiceOut, ProjectVendorIn, ProjectVendorOut
+from app.services.numbering import business_date, next_in_series, next_number
 
 WORK_ORDER_PREFIX = "WO"
+PROJECT_CODE_SERIES = "PRJ"
 FULL_WORK = 100.0
+# Reports are due on this day of the month after the project starts.
+REPORT_DUE_DAY = 25
 
 
-def default_report_date(start: date | None, end: date | None) -> date:
-    """Reports are due on the last day of the month the work ends in."""
-    return month_end(end or start or business_date())
+def month_start(on: date | None) -> date | None:
+    """A start month is kept as its 1st."""
+    return on.replace(day=1) if on else None
+
+
+def default_report_date(start: date | None) -> date:
+    """The 25th of the month after the start month (or after this month, with no start)."""
+    base = start or business_date()
+    year, month = (base.year + 1, 1) if base.month == 12 else (base.year, base.month + 1)
+    return date(year, month, REPORT_DUE_DAY)
+
+
+def next_project_code(db: Session) -> str:
+    """The next free PRJ-0001 style code."""
+    while True:
+        code = f"{PROJECT_CODE_SERIES}-{next_in_series(db, PROJECT_CODE_SERIES):04d}"
+        if not db.query(Project.id).filter(func.lower(Project.code) == code.lower()).first():
+            return code
+
+
+def set_services(project: Project, services: list[Service]) -> None:
+    """The project bills ``services``; the first is also kept in the older single-service column."""
+    project.services = services
+    project.service_id = services[0].id
 
 
 def assert_dates(start: date | None, end: date | None) -> None:
@@ -110,6 +134,10 @@ def has_vendor_invoices(db: Session, project_id: int) -> bool:
     return db.query(VendorInvoice.id).filter(VendorInvoice.project_id == project_id).first() is not None
 
 
+def has_client_invoices(db: Session, project_id: int) -> bool:
+    return db.query(ClientInvoice.id).filter(ClientInvoice.project_id == project_id).first() is not None
+
+
 # ---------- read models ----------
 
 def _invoiced(db: Session, project_ids: list[int]) -> dict[tuple[int, int], float]:
@@ -125,12 +153,26 @@ def _invoiced(db: Session, project_ids: list[int]) -> dict[tuple[int, int], floa
     return {(p, v): round(total or 0.0, 2) for p, v, total in rows}
 
 
+def _billed(db: Session, project_ids: list[int]) -> dict[int, float]:
+    """Taxable value billed to the client per project (proformas included, cancelled excluded)."""
+    if not project_ids:
+        return {}
+    rows = (
+        db.query(ClientInvoice.project_id, func.sum(ClientInvoice.taxable_value))
+        .filter(ClientInvoice.project_id.in_(project_ids), ClientInvoice.status != InvoiceStatus.CANCELLED)
+        .group_by(ClientInvoice.project_id)
+        .all()
+    )
+    return {p: round(total or 0.0, 2) for p, total in rows}
+
+
 def project_views(db: Session, projects: list[Project]) -> list[ProjectOut]:
-    invoiced = _invoiced(db, [p.id for p in projects])
-    return [_view(p, invoiced) for p in projects]
+    ids = [p.id for p in projects]
+    invoiced, billed = _invoiced(db, ids), _billed(db, ids)
+    return [_view(p, invoiced, billed.get(p.id, 0.0)) for p in projects]
 
 
-def _view(project: Project, invoiced: dict[tuple[int, int], float]) -> ProjectOut:
+def _view(project: Project, invoiced: dict[tuple[int, int], float], billed: float) -> ProjectOut:
     vendors = []
     for pv in project.vendors:
         spent = invoiced.get((project.id, pv.vendor_id), 0.0)
@@ -149,6 +191,10 @@ def _view(project: Project, invoiced: dict[tuple[int, int], float]) -> ProjectOu
             work_order_outdated=pv.work_order_outdated,
         ))
     committed = round(sum(v.agreed_cost for v in vendors), 2)
+    vendor_cost = round(sum(v.invoiced for v in vendors), 2)
+    contract = project.contract_value or 0.0
+    services = project.services
+    service = next((s for s in services if s.id == project.service_id), services[0] if services else None)
     return ProjectOut(
         id=project.id,
         code=project.code,
@@ -157,6 +203,11 @@ def _view(project: Project, invoiced: dict[tuple[int, int], float]) -> ProjectOu
         description=project.description,
         client_id=project.client_id,
         client_name=project.client.business_name if project.client else None,
+        services=[ProjectServiceOut.model_validate(s) for s in services],
+        service_id=service.id if service else None,
+        service_title=service.title if service else None,
+        sac_code=service.sac_code if service else None,
+        gst_rate=service.gst_rate if service else None,
         budget=project.budget,
         start_date=project.start_date,
         end_date=project.end_date,
@@ -165,8 +216,13 @@ def _view(project: Project, invoiced: dict[tuple[int, int], float]) -> ProjectOu
         vendors=vendors,
         work_percent_assigned=round(sum(v.work_percent for v in vendors), 2),
         committed_cost=committed,
-        invoiced_cost=round(sum(v.invoiced for v in vendors), 2),
+        invoiced_cost=vendor_cost,
         remaining_budget=round(project.budget - committed, 2),
         over_budget=committed > project.budget,
+        contract_value=contract,
+        billed=billed,
+        left_to_bill=round(contract - billed, 2) if contract > 0 else None,
+        over_contract=contract > 0 and billed > contract,
+        margin=round(billed - vendor_cost, 2),
         created_at=project.created_at,
     )

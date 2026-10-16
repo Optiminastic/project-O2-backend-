@@ -1,4 +1,4 @@
-"""Client invoice lifecycle: proforma -> client approval -> manager issue.
+"""Client invoice lifecycle: proforma -> manager approval sends it to the client -> client approval -> manager issue.
 
     Draft --send--> Awaiting Client --client approves--> Client Approved --issue--> Sent
       ^                   |                                     |
@@ -9,7 +9,7 @@ an audit entry; the caller commits.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -27,12 +27,14 @@ from app.models import (
 from app.services import invoice_links
 from app.services.audit import log_action
 from app.services.email import send_invoice_link_email
-from app.services.numbering import TAX_INVOICE_PREFIX, business_date, month_end, next_number
+from app.services.numbering import TAX_INVOICE_PREFIX, business_date, next_number
 
 ENTITY = "ClientInvoice"
 ISSUER_ROLES = frozenset({UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER})
 SENDABLE = frozenset({InvoiceStatus.DRAFT, InvoiceStatus.CHANGES_REQUESTED, InvoiceStatus.AWAITING_CLIENT})
 EDITABLE = SENDABLE
+# A tax invoice is to be paid in full by this day of the month after its date.
+PAYMENT_DUE_DAY = 15
 DELETABLE = frozenset({InvoiceStatus.DRAFT, InvoiceStatus.CHANGES_REQUESTED})
 # Statuses a user may still set by hand on an issued invoice. Payment statuses
 # are derived from payments and workflow stages only move through this module.
@@ -52,9 +54,13 @@ def _require_stage(invoice: ClientInvoice, allowed: frozenset[InvoiceStatus], ac
         raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot {action} an invoice in '{invoice.status.value}'")
 
 
-def _require_issuer(invoice: ClientInvoice, user: User) -> None:
+def _require_manager(user: User) -> None:
     if user.role not in ISSUER_ROLES:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a Finance Manager, CFO or CEO can do this")
+
+
+def _require_issuer(invoice: ClientInvoice, user: User) -> None:
+    _require_manager(user)
     if invoice.created_by_id is not None and invoice.created_by_id == user.id:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -105,6 +111,8 @@ def before_edit(db: Session, invoice: ClientInvoice, user: User) -> None:
 
 
 def send_to_client(db: Session, invoice: ClientInvoice, user: User) -> LinkDelivery:
+    """A manager's approval of the proforma: it goes to the client for confirmation."""
+    _require_manager(user)
     _require_stage(invoice, SENDABLE, "send")
     invoice_links.revoke_open_links(db, invoice, InvoiceLinkPurpose.APPROVE)
     invoice.status = InvoiceStatus.AWAITING_CLIENT
@@ -149,6 +157,7 @@ def request_changes_via_link(db: Session, link: InvoiceLink, comment: str) -> No
 
 
 def approve_manually(db: Session, invoice: ClientInvoice, user: User, note: str) -> None:
+    _require_manager(user)
     _require_stage(invoice, SENDABLE, "record client approval for")
     invoice_links.revoke_open_links(db, invoice, InvoiceLinkPurpose.APPROVE)
     _mark_client_approved(invoice, ClientApprovalMethod.MANUAL, invoice.client.business_name, note)
@@ -177,11 +186,8 @@ def issue(db: Session, invoice: ClientInvoice, user: User) -> LinkDelivery:
     now = datetime.now(timezone.utc)
     today = business_date(now)
     invoice.invoice_number = next_number(db, TAX_INVOICE_PREFIX, today)
-    invoice.invoice_date = today
-    # A proforma raised last month may carry a month-end that has passed; a new
-    # tax invoice must not go out already overdue.
-    if invoice.due_date is None or invoice.due_date < today:
-        invoice.due_date = month_end(today)
+    invoice.invoice_date = tax_invoice_date(invoice.proforma_date, today)
+    invoice.due_date = payment_due_date(invoice.invoice_date)
     invoice.status = InvoiceStatus.SENT
     invoice.issued_by_id = user.id
     invoice.issued_at = now
@@ -194,6 +200,22 @@ def issue(db: Session, invoice: ClientInvoice, user: User) -> LinkDelivery:
         + ("" if delivery.emailed else " (email not configured; link shared manually)"),
     )
     return delivery
+
+
+def tax_invoice_date(proforma_date: date | None, today: date) -> date:
+    """The proforma's date when it is in the month of issue (it may be backdated), else the issue date.
+
+    A tax invoice never lands in a month whose GST return may already be filed.
+    """
+    if proforma_date and proforma_date <= today and (proforma_date.year, proforma_date.month) == (today.year, today.month):
+        return proforma_date
+    return today
+
+
+def payment_due_date(invoice_date: date) -> date:
+    """Full payment is due by the 15th of the month after the tax invoice date."""
+    year, month = (invoice_date.year + 1, 1) if invoice_date.month == 12 else (invoice_date.year, invoice_date.month + 1)
+    return date(year, month, PAYMENT_DUE_DAY)
 
 
 def return_for_changes(db: Session, invoice: ClientInvoice, user: User, reason: str) -> None:

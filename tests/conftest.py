@@ -19,6 +19,7 @@ os.environ["FRONTEND_ORIGIN"] = "http://testserver"
 os.environ["COMPANY_LEGAL_NAME"] = "Test Supplier Pvt Ltd"
 os.environ["COMPANY_GSTIN"] = "27AAAAA0000A1Z5"
 os.environ["COMPANY_STATE"] = "Maharashtra"
+os.environ["SEED_SERVICE_CATALOGUE"] = "false"  # tests seed their own services
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -28,7 +29,7 @@ from app.config import settings  # noqa: E402
 from app.core.security import create_access_token, hash_password  # noqa: E402
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Client, Service, User, UserRole  # noqa: E402
+from app.models import Client, Project, Service, User, UserRole  # noqa: E402
 from app.services.agents import ensure_house_agent, house_agent  # noqa: E402
 
 assert settings.database_url == TEST_DATABASE_URL, "settings did not pick up the test database"
@@ -41,6 +42,21 @@ def default_service_id() -> int:
     """The service seeded for every test; invoices cannot be created without one."""
     with SessionLocal() as session:
         return session.query(Service).filter(Service.title == DEFAULT_SERVICE_TITLE).one().id
+
+
+def project_id_for(client: Client | int, service_id: int | None = None) -> int:
+    """A project for the client on the given (or default) service, ready to invoice. One per pair."""
+    client_id = client if isinstance(client, int) else client.id
+    service_id = service_id or default_service_id()
+    code = f"TEST-{client_id}-{service_id}"
+    with SessionLocal() as session:
+        project = session.query(Project).filter(Project.code == code).first()
+        if project is None:
+            project = Project(code=code, title="Test engagement", client_id=client_id, service_id=service_id)
+            project.services = [session.get(Service, service_id)]
+            session.add(project)
+            session.commit()
+        return project.id
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -1,10 +1,12 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.core.deps import get_current_user, require_roles
-from app.models import AuditLog, Client, ClientInvoice, Payment, PaymentMode, User, UserRole, InvoiceStatus
+from app.models import AuditLog, ClientInvoice, CompanyBank, Payment, PaymentMode, Project, User, UserRole, InvoiceStatus
 from app.schemas.invoice import (
     BulkCreatedOut,
     BulkPreviewOut,
@@ -13,6 +15,7 @@ from app.schemas.invoice import (
     InvoiceUpdate,
     InvoiceOut,
     InvoiceDetail,
+    InvoiceDocumentView,
     ManualApprovalIn,
     PaymentCreate,
     PaymentOut,
@@ -21,28 +24,24 @@ from app.schemas.invoice import (
     WorkflowResult,
 )
 from app.services import bulk_invoices as bulk
+from app.services import invoice_document
 from app.services import invoice_workflow as workflow
-from app.services.taxation import compute_gst, compute_tds
+from app.services.invoice_lines import (
+    LineInput,
+    apply_financials,
+    build_lines,
+    interstate_for,
+    lines_changed,
+    primary_service_id,
+)
 from app.services.invoice_lock import SETTLEMENT_TOLERANCE, assert_editable, recompute_invoice, settled_amount
 from app.services.audit import log_action
 from app.services.numbering import PROFORMA_PREFIX, business_date, month_end, next_number
 from app.services.agents import resolve_agent_id
-from app.services.service_catalog import service_snapshot, usable_service
+from app.services.service_catalog import usable_project
 from app.core.period import Period, month_period
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
-
-
-def _apply_financials(inv: ClientInvoice) -> None:
-    gst = compute_gst(inv.taxable_value, inv.gst_rate, inv.is_interstate)
-    inv.gst_amount = gst.gst_amount
-    inv.cgst, inv.sgst, inv.igst = gst.cgst, gst.sgst, gst.igst
-    inv.total_amount = gst.total
-    inv.expected_tds = compute_tds(inv.taxable_value, inv.tds_rate, inv.tds_applicable)
-    # amount_received is None until the row is flushed (column default not yet applied),
-    # so coalesce before comparing.
-    if (inv.amount_received or 0) <= 0:
-        inv.amount_pending = inv.total_amount
 
 
 FINANCE_ROLES = (UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER, UserRole.FINANCE_EXECUTIVE)
@@ -55,22 +54,59 @@ def _get_invoice(db: Session, invoice_id: int) -> ClientInvoice:
     return inv
 
 
-def _new_proforma(db: Session, user: User, **fields) -> ClientInvoice:
+def _checked_proforma_date(value: date | None) -> date:
+    """Today, or a date earlier this month: a proforma can be backdated, but not into a closed month."""
     today = business_date()
-    # Invoices are due at the end of the month unless another date is chosen.
-    fields["due_date"] = fields.get("due_date") or month_end(today)
+    if value is None:
+        return today
+    if value > today:
+        raise HTTPException(400, "The invoice date cannot be in the future.")
+    if value < today.replace(day=1):
+        raise HTTPException(400, f"The invoice date can be backdated only to 1 {today:%b %Y}.")
+    return value
+
+
+def _new_proforma(
+    db: Session,
+    user: User,
+    project: Project,
+    lines: list[LineInput],
+    *,
+    proforma_date: date | None = None,
+    due_date: date | None = None,
+    agent_id: int | None = None,
+    is_interstate: bool = False,
+    **fields,
+) -> ClientInvoice:
+    """A draft proforma billing ``project``: its client, and one line per service in ``lines``."""
+    dated = proforma_date or business_date()
     inv = ClientInvoice(
         **fields,
-        proforma_number=next_number(db, PROFORMA_PREFIX, today),
-        proforma_date=today,
+        project_id=project.id,
+        client_id=project.client_id,
+        # Credit the client's own agent unless another is chosen.
+        agent_id=resolve_agent_id(db, agent_id or project.client.agent_id),
+        is_interstate=interstate_for(project.client, is_interstate),
+        proforma_number=next_number(db, PROFORMA_PREFIX, business_date()),
+        proforma_date=dated,
+        # Invoices are due at the end of the month unless another date is chosen.
+        due_date=due_date or month_end(dated),
         status=InvoiceStatus.DRAFT,
         created_by_id=user.id,
         tds_applicable=True,  # clients always deduct TDS; only the rate varies
     )
-    _apply_financials(inv)
+    inv.lines = build_lines(project, lines)
+    apply_financials(inv)
     db.add(inv)
     db.flush()
     return inv
+
+
+def _line_inputs(project: Project, lines, taxable_value: float | None, description: str | None) -> list[LineInput]:
+    """The lines asked for, or one line on the project's first service for a single amount."""
+    if lines is not None:
+        return [LineInput(l.service_id, l.taxable_value, l.description) for l in lines]
+    return [LineInput(primary_service_id(project), taxable_value, description)]
 
 
 def _workflow_result(db: Session, inv: ClientInvoice, delivery: workflow.LinkDelivery | None = None) -> WorkflowResult:
@@ -120,14 +156,20 @@ def create_invoice(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*FINANCE_ROLES)),
 ):
-    client = db.get(Client, payload.client_id)
-    if not client:
-        raise HTTPException(404, "Client not found")
-    data = payload.model_dump()
-    # Credit the client's own agent unless another is chosen.
-    data["agent_id"] = resolve_agent_id(db, data.get("agent_id") or client.agent_id)
-    data.update(service_snapshot(usable_service(db, payload.service_id), data))
-    inv = _new_proforma(db, user, **data)
+    project = usable_project(db, payload.project_id)
+    inv = _new_proforma(
+        db,
+        user,
+        project,
+        _line_inputs(project, payload.lines, payload.taxable_value, payload.service_description),
+        proforma_date=_checked_proforma_date(payload.proforma_date),
+        due_date=payload.due_date,
+        agent_id=payload.agent_id,
+        is_interstate=payload.is_interstate,
+        tds_rate=payload.tds_rate,
+        supporting_document=payload.supporting_document,
+        internal_remarks=payload.internal_remarks,
+    )
     log_action(db, user, "Created proforma", "ClientInvoice", inv.id, inv.proforma_number)
     db.commit()
     db.refresh(inv)
@@ -158,9 +200,9 @@ def _row_out(c: bulk.RowCheck) -> BulkRowOut:
     gst = c.gst
     return BulkRowOut(
         row=c.row,
-        client_input=c.client_input,
+        project_input=c.project_input,
+        project_code=c.project.code if c.project else None,
         client_name=c.client.business_name if c.client else None,
-        service_input=c.service_input,
         service_title=c.service.title if c.service else None,
         amount=c.amount,
         gst_rate=c.service.gst_rate if c.service else None,
@@ -210,19 +252,19 @@ async def bulk_create(
         noun = "row has" if bad == 1 else "rows have"
         raise HTTPException(422, f"Nothing was created: {bad} {noun} problems. Fix them and upload again.")
 
-    created = []
-    for c in checks:
-        data = {
-            "client_id": c.client.id,
-            "agent_id": resolve_agent_id(db, c.client.agent_id),
-            "due_date": c.due_date,
-            "taxable_value": c.amount,
-            "is_interstate": c.is_interstate,
-            "tds_rate": c.tds_rate,
-            "internal_remarks": c.remarks,
-        }
-        data.update(service_snapshot(c.service, {"service_description": c.description}))
-        created.append(_new_proforma(db, user, **data))
+    created = [
+        _new_proforma(
+            db,
+            user,
+            c.project,
+            [LineInput(c.service.id, c.amount, c.description)],
+            due_date=c.due_date,
+            is_interstate=c.is_interstate,
+            tds_rate=c.tds_rate,
+            internal_remarks=c.remarks,
+        )
+        for c in checks
+    ]
 
     numbers = f"{created[0].proforma_number} to {created[-1].proforma_number}"
     log_action(db, user, "Bulk uploaded proformas", "ClientInvoice", None, f"{len(created)} proformas, {numbers}")
@@ -235,6 +277,12 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db), user: User = Dep
     return _get_invoice(db, invoice_id)
 
 
+@router.get("/{invoice_id}/document", response_model=InvoiceDocumentView)
+def get_invoice_document(invoice_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The printable proforma / tax invoice, exactly as the client sees it."""
+    return invoice_document.document(_get_invoice(db, invoice_id))
+
+
 @router.patch("/{invoice_id}", response_model=InvoiceDetail)
 def update_invoice(
     invoice_id: int,
@@ -245,16 +293,18 @@ def update_invoice(
     inv = _get_invoice(db, invoice_id)
 
     incoming = payload.model_dump(exclude_unset=True)
+    new_lines = _edited_lines(db, inv, payload, incoming)
     if "agent_id" in incoming:
         incoming["agent_id"] = resolve_agent_id(db, incoming["agent_id"])
-    if incoming.get("service_id") is not None and incoming["service_id"] != inv.service_id:
-        # A new service re-applies its details unless the same request overrides them.
-        incoming.update(service_snapshot(usable_service(db, incoming["service_id"]), incoming))
+    if incoming.get("proforma_date") is not None and incoming["proforma_date"] != inv.proforma_date:
+        _checked_proforma_date(incoming["proforma_date"])
     if incoming.get("status") is not None:
         workflow.assert_manual_status(inv, incoming["status"])
     workflow.before_edit(db, inv, user)
     # Enforce locking on critical financial fields (unless CEO override).
     violations = assert_editable(inv, incoming)
+    if new_lines is not None and inv.is_locked and lines_changed(inv, new_lines[1]):
+        violations.append("lines")
     if violations and user.role != UserRole.ADMIN_CEO:
         raise HTTPException(
             423,
@@ -264,13 +314,67 @@ def update_invoice(
 
     for k, v in incoming.items():
         setattr(inv, k, v)
-    _apply_financials(inv)
+    if new_lines is not None:
+        project, inputs = new_lines
+        inv.lines = build_lines(project, inputs)
+    if not inv.is_issued:
+        # A proforma follows the client's GSTIN state; an issued invoice keeps the tax it went out with.
+        inv.is_interstate = interstate_for(inv.client, inv.is_interstate)
+    apply_financials(inv)
     recompute_invoice(inv)
     note = "CEO correction on locked invoice" if violations else "Updated invoice"
     log_action(db, user, note, "ClientInvoice", inv.id, ", ".join(violations) or None)
     db.commit()
     db.refresh(inv)
     return inv
+
+
+def _edited_lines(
+    db: Session, inv: ClientInvoice, payload: InvoiceUpdate, incoming: dict
+) -> tuple[Project, list[LineInput]] | None:
+    """The project and lines an edit asks for, or None to keep the lines.
+
+    ``incoming`` loses the line fields, and gains the client of a newly chosen project.
+    """
+    for field in ("lines", "taxable_value", "service_description"):
+        incoming.pop(field, None)
+    project_id = payload.project_id if payload.project_id is not None else inv.project_id
+    moved = project_id != inv.project_id
+    sent = payload.model_fields_set
+    if moved:
+        project = usable_project(db, project_id)
+        incoming["client_id"] = project.client_id
+    elif not sent & {"lines", "taxable_value", "service_description"}:
+        return None
+    elif inv.project is None:
+        _legacy_edit(payload, incoming)
+        return None
+    else:
+        project = inv.project
+
+    if payload.lines is not None:
+        return project, _line_inputs(project, payload.lines, None, None)
+    if len(inv.lines) > 1 and not moved:
+        raise HTTPException(400, "This invoice has several lines. Send every line to change an amount.")
+    current = inv.line_items[0]
+    amount = payload.taxable_value if payload.taxable_value is not None else inv.taxable_value
+    if "service_description" in sent:
+        description = payload.service_description
+    else:
+        # Another project's service brings its own description.
+        description = None if moved else current.description
+    service_id = current.service_id if not moved and current.service_id else primary_service_id(project)
+    return project, [LineInput(service_id, amount, description)]
+
+
+def _legacy_edit(payload: InvoiceUpdate, incoming: dict) -> None:
+    """An invoice raised before projects keeps its single header line."""
+    if payload.lines is not None:
+        raise HTTPException(400, "This invoice was raised before projects. Choose a project to bill by service.")
+    if payload.taxable_value is not None:
+        incoming["taxable_value"] = payload.taxable_value
+    if "service_description" in payload.model_fields_set:
+        incoming["service_description"] = payload.service_description
 
 
 @router.delete("/{invoice_id}", status_code=204)
@@ -292,17 +396,20 @@ def duplicate_invoice(
     invoice_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles(*FINANCE_ROLES))
 ):
     src = _get_invoice(db, invoice_id)
+    if src.project_id is None:
+        raise HTTPException(400, "This invoice was raised before projects. Raise a new one from its project.")
+    project = usable_project(db, src.project_id)
+    known = {svc.id for svc in project.services}
+    lines = [
+        LineInput(l.service_id if l.service_id in known else primary_service_id(project), l.taxable_value, l.description)
+        for l in src.line_items
+    ]
     inv = _new_proforma(
         db,
         user,
-        client_id=src.client_id,
+        project,
+        lines,
         agent_id=src.agent_id,
-        service_id=src.service_id,
-        service_title=src.service_title,
-        service_description=src.service_description,
-        sac_code=src.sac_code,
-        taxable_value=src.taxable_value,
-        gst_rate=src.gst_rate,
         is_interstate=src.is_interstate,
         tds_rate=src.tds_rate,
     )
@@ -329,22 +436,28 @@ def record_payment(
             400, f"The receipt date cannot be before the invoice date ({inv.invoice_date:%d %b %Y})."
         )
     remaining = round(inv.total_amount - settled_amount(inv), 2)
-    settling = round(payload.amount + payload.tds_deducted, 2)
+    tds_so_far = round(sum(p.tds_deducted or 0.0 for p in inv.payments), 2)
+    tds = payload.tds_deducted
+    if tds is None:
+        tds = _tds_with_receipt(remaining, payload.amount, round(max(inv.expected_tds - tds_so_far, 0.0), 2))
+    settling = round(payload.amount + tds, 2)
     if settling > remaining + SETTLEMENT_TOLERANCE:
         raise HTTPException(
             400,
-            f"Receipt of {workflow.format_inr(payload.amount)} plus TDS of {workflow.format_inr(payload.tds_deducted)} "
+            f"Receipt of {workflow.format_inr(payload.amount)} plus TDS of {workflow.format_inr(tds)} "
             f"is more than the {workflow.format_inr(remaining)} still due on this invoice.",
         )
-    tds_so_far = round(sum(p.tds_deducted or 0.0 for p in inv.payments), 2)
-    if tds_so_far + payload.tds_deducted > inv.expected_tds + SETTLEMENT_TOLERANCE:
+    if tds_so_far + tds > inv.expected_tds + SETTLEMENT_TOLERANCE:
         raise HTTPException(
             400,
-            f"TDS of {workflow.format_inr(tds_so_far + payload.tds_deducted)} is more than the "
+            f"TDS of {workflow.format_inr(tds_so_far + tds)} is more than the "
             f"{workflow.format_inr(inv.expected_tds)} expected at {inv.tds_rate:g}%. Check the amount the client deducted.",
         )
 
-    payment = Payment(payment_mode=PaymentMode.BANK, **payload.model_dump())
+    payment = Payment(
+        payment_mode=PaymentMode.BANK,
+        **{**payload.model_dump(), "tds_deducted": tds, "bank_name": _receiving_bank_name(db, payload)},
+    )
     # Through the relationship, so the payments already loaded for the checks above include it.
     inv.payments.append(payment)
     db.flush()
@@ -357,6 +470,29 @@ def record_payment(
     db.commit()
     db.refresh(inv)
     return inv
+
+
+def _receiving_bank_name(db: Session, payload: PaymentCreate) -> str:
+    """The bank as the receipt records it: one of ours by id, or the name typed."""
+    if payload.bank_account_id is None:
+        return payload.bank_name
+    bank = db.get(CompanyBank, payload.bank_account_id)
+    if bank is None:
+        raise HTTPException(404, "Bank not found")
+    if not bank.is_active:
+        raise HTTPException(400, f"{bank.label} is deactivated. Choose another bank.")
+    return bank.label
+
+
+def _tds_with_receipt(remaining: float, amount: float, tds_left: float) -> float:
+    """TDS counted with a receipt when the form does not ask for it.
+
+    Clients pay net of TDS, so once the cash clears everything but the TDS still
+    expected, that TDS is taken as deducted. Earlier part payments count none.
+    """
+    if amount < remaining - tds_left - SETTLEMENT_TOLERANCE:
+        return 0.0
+    return round(min(tds_left, max(remaining - amount, 0.0)), 2)
 
 
 @router.get("/{invoice_id}/payments", response_model=list[PaymentOut])

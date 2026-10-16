@@ -1,7 +1,7 @@
-"""Service catalogue: every invoice is for one service, which pre-fills its tax details."""
+"""Service catalogue: each project bills one service, whose tax details go on the project's invoices."""
 
 from app.models import ClientInvoice
-from tests.conftest import auth_header, default_service_id
+from tests.conftest import auth_header, project_id_for
 
 
 def add_service(client, user, **overrides):
@@ -15,8 +15,9 @@ def add_service(client, user, **overrides):
     return client.post("/api/services", json=body, headers=auth_header(user))
 
 
-def new_invoice(client, user, client_row, **overrides):
-    body = {"client_id": client_row.id, "taxable_value": 1000, "service_id": default_service_id(), **overrides}
+def new_invoice(client, user, client_row, service_id=None, **overrides):
+    """An invoice on the client's project for ``service_id`` (the default service when omitted)."""
+    body = {"project_id": project_id_for(client_row, service_id), "taxable_value": 1000, **overrides}
     return client.post("/api/invoices", json=body, headers=auth_header(user))
 
 
@@ -41,6 +42,11 @@ def test_service_needs_a_title_and_a_valid_gst_rate(client, users):
     assert add_service(client, users["manager"], title="  ").status_code == 422
     assert add_service(client, users["manager"], gst_rate=-1).status_code == 422
     assert add_service(client, users["manager"], gst_rate=41).status_code == 422
+    assert add_service(client, users["manager"], gst_rate=15).status_code == 422  # not a GST slab
+    assert add_service(client, users["manager"], sac_code="123").status_code == 422  # fewer than 4 digits
+    assert add_service(client, users["manager"], sac_code="123456789").status_code == 422  # more than 8
+    assert add_service(client, users["manager"], sac_code="99A1").status_code == 422
+    assert add_service(client, users["manager"], title="Short code", sac_code="9983").status_code == 201
 
 
 def test_service_titles_are_unique(client, users):
@@ -63,13 +69,6 @@ def test_everyone_lists_active_services_only(client, users):
 # ---------- Invoices ----------
 
 
-def test_invoice_requires_a_service(client, users, client_row):
-    res = client.post(
-        "/api/invoices", json={"client_id": client_row.id, "taxable_value": 1000}, headers=auth_header(users["exec"])
-    )
-    assert res.status_code == 422
-
-
 def test_service_prefills_title_description_sac_and_gst_rate(client, users, client_row):
     svc = add_service(client, users["manager"], gst_rate=5).json()
     res = new_invoice(client, users["exec"], client_row, service_id=svc["id"])
@@ -83,13 +82,13 @@ def test_service_prefills_title_description_sac_and_gst_rate(client, users, clie
     assert inv["gst_amount"] == 50  # 5% of 1000
 
 
-def test_invoice_can_override_the_prefilled_details(client, users, client_row):
+def test_invoice_can_reword_the_description_but_not_the_tax_details(client, users, client_row):
     svc = add_service(client, users["manager"]).json()
     inv = new_invoice(
         client, users["exec"], client_row, service_id=svc["id"], service_description="FY 2025-26 audit", gst_rate=12
     ).json()
     assert inv["service_description"] == "FY 2025-26 audit"
-    assert inv["gst_rate"] == 12
+    assert inv["gst_rate"] == 18  # the service's rate; a rate sent with the invoice is ignored
 
 
 def test_inactive_service_cannot_be_used(client, users, client_row):
@@ -112,11 +111,12 @@ def test_editing_the_catalogue_does_not_rewrite_existing_invoices(client, users,
     assert again["gst_rate"] == 18
 
 
-def test_changing_a_proformas_service_reapplies_its_details(client, users, client_row):
+def test_moving_a_proforma_to_another_project_reapplies_its_service(client, users, client_row):
     first = add_service(client, users["manager"]).json()
     second = add_service(client, users["manager"], title="Tax filing", description="ITR filing", sac_code="998231", gst_rate=18).json()
     inv = new_invoice(client, users["exec"], client_row, service_id=first["id"]).json()
-    res = client.patch(f"/api/invoices/{inv['id']}", json={"service_id": second["id"]}, headers=auth_header(users["exec"]))
+    other_project = project_id_for(client_row, second["id"])
+    res = client.patch(f"/api/invoices/{inv['id']}", json={"project_id": other_project}, headers=auth_header(users["exec"]))
     assert res.status_code == 200, res.text
     body = res.json()
     assert (body["service_title"], body["service_description"], body["sac_code"]) == ("Tax filing", "ITR filing", "998231")
@@ -124,17 +124,18 @@ def test_changing_a_proformas_service_reapplies_its_details(client, users, clien
 
 def test_issued_invoice_service_is_locked(client, users, client_row):
     inv = new_invoice(client, users["exec"], client_row).json()
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["exec"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
     client.post(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}/approve", json={"name": "A. Client"})
     client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
     other = add_service(client, users["manager"]).json()
-    res = client.patch(f"/api/invoices/{inv['id']}", json={"service_id": other["id"]}, headers=auth_header(users["manager"]))
+    other_project = project_id_for(client_row, other["id"])
+    res = client.patch(f"/api/invoices/{inv['id']}", json={"project_id": other_project}, headers=auth_header(users["manager"]))
     assert res.status_code == 423
 
 
 def test_client_sees_the_service_title(client, users, client_row):
     inv = new_invoice(client, users["exec"], client_row).json()
-    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["exec"])).json()
+    sent = client.post(f"/api/invoices/{inv['id']}/send-to-client", headers=auth_header(users["manager"])).json()
     view = client.get(f"/api/public/invoices/{sent['link_url'].rsplit('/', 1)[-1]}").json()
     assert view["invoice"]["service_title"] == inv["service_title"]
 

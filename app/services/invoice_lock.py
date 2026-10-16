@@ -6,6 +6,7 @@ from app.models import ClientInvoice, InvoiceStatus
 
 # Critical financial fields that may not change once an invoice is locked.
 LOCKED_FIELDS = {
+    "project_id",
     "client_id",
     "agent_id",  # commission is earned on the issued invoice
     "service_id",

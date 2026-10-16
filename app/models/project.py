@@ -1,13 +1,23 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Enum as SAEnum, Float, ForeignKey, Index, String, Text, UniqueConstraint, text,
+    Boolean, Column, Date, DateTime, Enum as SAEnum, Float, ForeignKey, Index, String, Table, Text, UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.enums import AllocationStatus
 from app.models.mixins import TimestampMixin
+
+
+# The services a project bills. Each one becomes a line on the project's invoices.
+project_services = Table(
+    "project_services",
+    Base.metadata,
+    Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("service_id", ForeignKey("services.id"), primary_key=True, index=True),
+)
 
 
 class Project(Base, TimestampMixin):
@@ -26,6 +36,10 @@ class Project(Base, TimestampMixin):
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
     # The most the company plans to spend on vendors for this project.
     budget: Mapped[float] = mapped_column(Float, default=0.0)
+    # The first of ``services``, kept for projects made before a project could bill several.
+    service_id: Mapped[int | None] = mapped_column(ForeignKey("services.id"), nullable=True, index=True)
+    # The fee agreed with the client, before GST. 0 means no billing limit is known.
+    contract_value: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expected_report_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -33,6 +47,10 @@ class Project(Base, TimestampMixin):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     client: Mapped["Client | None"] = relationship()  # noqa: F821
+    service: Mapped["Service | None"] = relationship()  # noqa: F821
+    services: Mapped[list["Service"]] = relationship(  # noqa: F821
+        secondary=project_services, order_by="Service.title"
+    )
     vendors: Mapped[list["ProjectVendor"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectVendor.id"
     )

@@ -1,4 +1,4 @@
-from sqlalchemy import String, Text, ForeignKey
+from sqlalchemy import Boolean, String, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -18,6 +18,9 @@ class Client(Base, TimestampMixin):
     billing_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     gst_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
     coi: Mapped[str | None] = mapped_column(String(120), nullable=True)  # Certificate of Incorporation
+    # MSME (Udyam registered) clients must be paid within 45 days under the MSMED Act.
+    msme: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    msme_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
     category: Mapped[str | None] = mapped_column(String(80), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
