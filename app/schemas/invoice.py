@@ -223,6 +223,9 @@ class InvoiceOut(BaseModel):
     amount_pending: float
     status: InvoiceStatus
     gst_status: GstStatus
+    # "Not applicable" (proforma), "Pending" (tax invoice without an IRN yet) or "Generated".
+    e_invoice_status: str
+    irn: str | None = None
     is_locked: bool
     locked_at: datetime | None
     supporting_document: str | None

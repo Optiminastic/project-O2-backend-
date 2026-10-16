@@ -311,3 +311,17 @@ def test_erase_registry_covers_new_tables():
     assert_covers_schema()
     assert "invoice_links" in DELETE_ORDER
     assert "document_sequences" in RETAINED
+
+
+# ---------- e-invoice ----------
+
+
+def test_e_invoice_is_not_applicable_on_a_proforma_and_pending_once_issued(client, users, client_row):
+    inv = create_proforma(client, users["exec"], client_row)
+    assert inv["e_invoice_status"] == "Not applicable"
+    approve_via_link(client, inv["id"], send(client, users["coordinator"], inv["id"]))
+    res = client.post(f"/api/invoices/{inv['id']}/issue", headers=auth_header(users["manager"]))
+    assert res.status_code == 200, res.text
+    issued = res.json()["invoice"]
+    assert issued["e_invoice_status"] == "Pending"
+    assert issued["irn"] is None

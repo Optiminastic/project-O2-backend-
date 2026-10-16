@@ -16,6 +16,11 @@ from app.models.enums import (
 )
 
 
+E_INVOICE_NOT_APPLICABLE = "Not applicable"
+E_INVOICE_PENDING = "Pending"
+E_INVOICE_GENERATED = "Generated"
+
+
 class ClientInvoice(Base, TimestampMixin):
     __tablename__ = "client_invoices"
 
@@ -82,6 +87,8 @@ class ClientInvoice(Base, TimestampMixin):
     change_requested_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
     issued_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # GST e-invoice reference (IRN) from the government portal. Generation is not built yet.
+    irn: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     client: Mapped["Client"] = relationship(back_populates="invoices")  # noqa: F821
     project: Mapped["Project | None"] = relationship()  # noqa: F821
@@ -122,6 +129,13 @@ class ClientInvoice(Base, TimestampMixin):
             sgst=self.sgst,
             igst=self.igst,
         )]
+
+    @property
+    def e_invoice_status(self) -> str:
+        """A proforma needs no e-invoice; a tax invoice needs an IRN, which is pending until one is recorded."""
+        if not self.is_issued:
+            return E_INVOICE_NOT_APPLICABLE
+        return E_INVOICE_GENERATED if self.irn else E_INVOICE_PENDING
 
     @property
     def display_number(self) -> str:
