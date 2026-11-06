@@ -208,7 +208,7 @@ class GstLookupOut(BaseModel):
     `valid` reflects the format + checksum check (always computed offline).
     `pan` and `state` are derived from the number itself. `legal_name`,
     `trade_name` and `address` are only populated when a live provider key is
-    configured and the lookup succeeds. `source` is "appyflow" or "offline".
+    configured and the lookup succeeds. `source` is "apiserver" or "offline".
     """
 
     gstin: str
@@ -220,6 +220,12 @@ class GstLookupOut(BaseModel):
     trade_name: str | None = None
     address: str | None = None
     status: str | None = None  # registration status, e.g. "Active"
+    taxpayer_type: str | None = None  # "Regular" / "Composition"
+    constitution: str | None = None  # e.g. "Private Limited Company"
+    registration_date: str | None = None  # YYYY-MM-DD
+    cancellation_date: str | None = None
+    nature_of_business: list[str] | None = None
+    einvoice_enabled: bool | None = None  # whether e-invoicing (IRN) applies
     source: str = "offline"
     message: str | None = None
 

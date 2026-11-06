@@ -3,8 +3,9 @@
 Two layers:
   1. Offline — validate the GSTIN format + checksum and derive the embedded
      PAN and the registration state. This always runs, needs no network or key.
-  2. Live — if `settings.gst_api_key` is set, look the number up with Appyflow
-     to fetch the legal name, trade name and registered address.
+  2. Live — if `settings.gst_api_key` is set, look the number up with
+     apiserver.in (POST /v1/gst/verify) to fetch the legal name, trade name,
+     registered address, status, taxpayer type and e-invoice applicability.
 
 Nothing here is hardcoded: the provider URL and key both come from config / .env.
 """
@@ -21,21 +22,23 @@ from app.services.identifiers import GSTIN_STATE_CODES, gstin_error, pan_of_gsti
 router = APIRouter(prefix="/gst", tags=["gst"])
 
 
-def _address_from_appyflow(pradr: dict | None) -> str | None:
-    """Best-effort readable address from Appyflow's principal-address block."""
-    if not isinstance(pradr, dict):
+def _address_from_apiserver(place: dict | None) -> str | None:
+    """Readable one-line address from apiserver.in's `principal_place` block."""
+    if not isinstance(place, dict):
         return None
-    if pradr.get("adr"):
-        return pradr["adr"]
-    addr = pradr.get("addr")
-    if isinstance(addr, dict):
-        parts = [
-            addr.get("bno"), addr.get("bnm"), addr.get("st"), addr.get("loc"),
-            addr.get("dst"), addr.get("stcd"), addr.get("pncd"),
-        ]
-        joined = ", ".join(p for p in parts if p)
-        return joined or None
-    return None
+    parts = [
+        place.get("line1"), place.get("locality"), place.get("city"),
+        place.get("district"), place.get("state"),
+    ]
+    # De-duplicate (city and district are often the same) while keeping order.
+    seen: list[str] = []
+    for p in parts:
+        if p and p not in seen:
+            seen.append(p)
+    joined = ", ".join(seen)
+    if place.get("pincode"):
+        joined = f"{joined} - {place['pincode']}" if joined else place["pincode"]
+    return joined or None
 
 
 @router.get("/{gstin}", response_model=GstLookupOut)
@@ -63,27 +66,43 @@ def lookup_gstin(gstin: str, user: User = Depends(get_current_user)) -> GstLooku
         return out
 
     try:
-        resp = httpx.get(
+        resp = httpx.post(
             settings.gst_api_url,
-            params={"gstNo": gstin, "key_secret": settings.gst_api_key},
-            timeout=10.0,
+            json={"gstin": gstin},
+            headers={"Authorization": f"Bearer {settings.gst_api_key}"},
+            timeout=15.0,
         )
-        data = resp.json()
+        body = resp.json()
     except (httpx.HTTPError, ValueError):
         out.message = "Details lookup unavailable right now (PAN & state derived offline)."
         return out
 
-    info = data.get("taxpayerInfo") if isinstance(data, dict) else None
-    if not info:
-        # Appyflow returns {"error": true, "message": "..."} or a bare message.
-        out.message = (data.get("message") if isinstance(data, dict) else None) or "GSTIN not found in the registry."
+    data = body.get("data") if isinstance(body, dict) else None
+    if not (isinstance(body, dict) and body.get("success") and isinstance(data, dict)):
+        # apiserver.in errors: {"success": false, "error": {"code", "message", ...}}
+        err = body.get("error") if isinstance(body, dict) else None
+        code = err.get("code") if isinstance(err, dict) else None
+        if code == "RECORD_NOT_FOUND":
+            out.message = "GSTIN not found in the GST registry."
+        elif code in ("AUTH_INVALID_KEY", "AUTH_SCOPE_DENIED", "WALLET_INSUFFICIENT_BALANCE"):
+            out.message = "GST lookup is not available (check the apiserver.in key / wallet). PAN & state derived offline."
+        else:
+            out.message = (err.get("message") if isinstance(err, dict) else None) or "GST lookup failed."
         return out
 
-    out.source = "appyflow"
-    out.legal_name = info.get("lgnm") or None
-    out.trade_name = info.get("tradeNam") or None
-    out.status = info.get("sts") or None
-    out.address = _address_from_appyflow(info.get("pradr"))
-    if info.get("pan"):
-        out.pan = info["pan"]
+    out.source = "apiserver"
+    out.legal_name = data.get("legal_name") or None
+    out.trade_name = data.get("trade_name") or None
+    out.status = data.get("status") or None
+    out.address = _address_from_apiserver(data.get("principal_place"))
+    out.taxpayer_type = data.get("taxpayer_type") or None
+    out.constitution = data.get("constitution") or None
+    out.registration_date = data.get("registration_date") or None
+    out.cancellation_date = data.get("cancellation_date") or None
+    out.nature_of_business = data.get("nature_of_business") or None
+    out.einvoice_enabled = data.get("einvoice_enabled")
+    if data.get("pan"):
+        out.pan = data["pan"]
+    if data.get("state"):
+        out.state = data["state"]
     return out

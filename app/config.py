@@ -68,11 +68,11 @@ class Settings(BaseSettings):
     invoice_approval_link_days: int = 30
     invoice_view_link_days: int = 365
 
-    # GST verification (Appyflow). When gst_api_key is blank the /gst endpoint
+    # GST verification (apiserver.in, POST /v1/gst/verify, Bearer key). When gst_api_key is blank the /gst endpoint
     # still validates the number and derives PAN + state offline; the legal /
     # trade name and registered address are only fetched when a key is present.
     gst_api_key: str = ""
-    gst_api_url: str = "https://appyflow.in/api/verifyGST"
+    gst_api_url: str = "https://api.apiserver.in/v1/gst/verify"
 
     @field_validator("database_url", mode="after")
     @classmethod
