@@ -21,7 +21,9 @@ class Vendor(Base, TimestampMixin):
 
     gst_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
     pan: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # Udyam registration number. Present only for MSME-registered vendors.
+    # MSME registered (Yes/No). The Udyam number is optional even then.
+    msme: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Udyam registration number. Kept only for MSME-registered vendors.
     msme_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
     coi: Mapped[str | None] = mapped_column(String(120), nullable=True)  # Certificate of Incorporation
 

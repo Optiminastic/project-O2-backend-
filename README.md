@@ -63,6 +63,8 @@ Taxation (CEO/CFO/Finance Manager, `?month=`): `GET /api/taxation/summary`, `GET
 
 Projects: `GET/POST /api/projects` (`?month=` shows projects running that month), `GET/PATCH/DELETE /api/projects/{id}` (delete refused once vendors have invoiced it), `GET /api/projects/{id}/vendors/{vendor_id}/work-order.pdf` (first download assigns the WO number), `POST .../work-order/send` (emails the PDF; `emailed: false` when SMTP is not set up). Vendor invoices take an optional `project_id`.
 
+Vendors: `POST /api/vendors` requires `business_name`, `email`, `gst_number`, `address`, `msme` (true/false) and at least one `bank_accounts` entry; `msme_number` (dropped when `msme` is false), `coi`, `phone` and `pan` are optional, and the PAN is taken from the GSTIN when left out. `PATCH /api/vendors/{id}` sends only what changes but cannot blank a required field or leave no bank account.
+
 Bulk invoice upload: `GET /api/invoices/bulk/template` (xlsx), `POST /api/invoices/bulk/preview` (checks a file, creates nothing), `POST /api/invoices/bulk` (creates all rows as draft proformas in one transaction, or returns 422 and creates none).
 
 List endpoints accept `?month=YYYY-MM` (omit it for all time): invoices, dashboard summary, taxation summary/receipts/GST pending, approvals, reports, bank statements, audit trail and vendor invoices.

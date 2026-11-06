@@ -2,11 +2,11 @@
 
 from app.models import PaymentApproval, Vendor, VendorInvoice
 from app.services.numbering import business_date
-from tests.conftest import auth_header, project_id_for
+from tests.conftest import auth_header, project_id_for, vendor_body
 
 
 def vendor(client, user, **overrides):
-    body = {"business_name": "Optiminastic Labs", "email": "accounts@labs.example", **overrides}
+    body = vendor_body(**{"business_name": "Optiminastic Labs", "email": "accounts@labs.example", **overrides})
     return client.post("/api/vendors", json=body, headers=auth_header(user))
 
 

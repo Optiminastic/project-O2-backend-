@@ -37,8 +37,8 @@ MANAGER_ROLES = (UserRole.ADMIN_CEO, UserRole.CFO, UserRole.FINANCE_MANAGER)
 # A vendor also needs at least one bank account to be paid into.
 MANDATORY_VERIFY_FIELDS = {"gst_number": "GST number", "pan": "PAN"}
 
-# Cannot be cleared on edit: a vendor always has a name, an email and a group-company flag.
-REQUIRED_FIELDS = ("business_name", "email", "is_group_company")
+# Cannot be cleared on edit: an explicit null for one of these is ignored.
+REQUIRED_FIELDS = ("business_name", "email", "gst_number", "address", "is_group_company")
 
 
 def _bank_accounts(accounts: list[VendorBankAccountIn]) -> list[VendorBankAccount]:

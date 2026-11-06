@@ -130,3 +130,24 @@ def client_row(db):
     db.commit()
     db.refresh(row)
     return row
+
+
+VENDOR_HDFC = {
+    "account_holder": "Quanta Research LLP", "bank_name": "HDFC Bank",
+    "account_number": "50100123456789", "ifsc_code": "hdfc0001234",
+}
+
+
+def vendor_body(**overrides) -> dict:
+    """A complete vendor as the onboarding form sends it."""
+    return {
+        "business_name": "Quanta Research",
+        "email": "accounts@quanta.example",
+        "gst_number": "27AAGFQ1234C1ZO",
+        "address": "4th Floor, Kamala Mills, Lower Parel, Mumbai 400013",
+        "msme": True,
+        "msme_number": "udyam-mh-26-0012345",
+        "coi": "U72900MH2015PTC123456",
+        "bank_accounts": [VENDOR_HDFC],
+        **overrides,
+    }

@@ -7,7 +7,7 @@ import pytest
 from app.models import Service
 from app.services.identifiers import gstin_check_char, gstin_error
 from app.services.numbering import business_date
-from tests.conftest import auth_header, project_id_for
+from tests.conftest import auth_header, project_id_for, vendor_body
 from tests.test_payment_bank import issued_invoice
 
 GSTIN = "27AAGFQ1234C1ZO"  # valid checksum; PAN AAGFQ1234C
@@ -73,7 +73,7 @@ def test_blank_optional_fields_are_stored_as_empty(client, users):
 
 
 def test_vendor_pan_must_match_the_pan_inside_its_gstin(client, users):
-    body = {"business_name": "Quanta", "email": "a@quanta.example", "gst_number": GSTIN, "pan": "AAGFQ9999C"}
+    body = vendor_body(gst_number=GSTIN, pan="AAGFQ9999C")
     res = client.post("/api/vendors", json=body, headers=auth_header(users["exec"]))
     assert res.status_code == 422
     assert "does not match" in res.text
@@ -81,7 +81,7 @@ def test_vendor_pan_must_match_the_pan_inside_its_gstin(client, users):
 
 def test_vendor_cannot_list_the_same_bank_account_twice(client, users):
     account = {"account_holder": "Quanta", "bank_name": "HDFC", "account_number": "50100123456789", "ifsc_code": "HDFC0001234"}
-    body = {"business_name": "Quanta", "email": "a@quanta.example", "bank_accounts": [account, account]}
+    body = vendor_body(bank_accounts=[account, account])
     assert client.post("/api/vendors", json=body, headers=auth_header(users["exec"])).status_code == 422
 
 
@@ -169,7 +169,7 @@ def test_receipt_reference_is_upper_cased(client, users, client_row):
 
 @pytest.fixture
 def vendor_id(client, users):
-    body = {"business_name": "Quanta", "email": "a@quanta.example", "gst_number": GSTIN}
+    body = vendor_body(gst_number=GSTIN)
     return client.post("/api/vendors", json=body, headers=auth_header(users["exec"])).json()["id"]
 
 
