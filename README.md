@@ -109,3 +109,13 @@ docker exec projecto2-db psql -U o2_admin -d postgres -c "create database projec
 pip install -r requirements-dev.txt
 python -m pytest
 ```
+
+## Locked out
+
+Nobody can sign in? Set a new password from the server; nothing else changes:
+
+```
+docker compose exec api python -m app.reset_password
+```
+
+It lists the CEO accounts, asks for the email and the new password (typed twice, never shown), and reactivates the account.
