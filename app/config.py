@@ -68,11 +68,13 @@ class Settings(BaseSettings):
     invoice_approval_link_days: int = 30
     invoice_view_link_days: int = 365
 
-    # GST verification (apiserver.in, POST /v1/gst/verify, Bearer key). When gst_api_key is blank the /gst endpoint
+    # GST verification (GSTVerify — https://gstverify.co.in, GET <url>/{GSTIN}, X-API-Key header). When gst_api_key is blank the /gst endpoint
     # still validates the number and derives PAN + state offline; the legal /
     # trade name and registered address are only fetched when a key is present.
     gst_api_key: str = ""
-    gst_api_url: str = "https://api.apiserver.in/v1/gst/verify"
+    gst_api_url: str = "https://gstverify.co.in/api/v1/verify"
+    # Local demos only: return a canned GSTVerify-shaped response instead of calling the API.
+    gst_api_mock: bool = False
 
     @field_validator("database_url", mode="after")
     @classmethod
