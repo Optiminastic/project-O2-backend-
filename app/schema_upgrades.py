@@ -266,6 +266,13 @@ VENDOR_GROUP_AND_TDS = (
 # Matches alembic revision a5e9b3d7f1c4 (e-invoice reference on tax invoices).
 E_INVOICE = ("ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS irn VARCHAR(64)",)
 
+# Vendor form per the sheet: MSME is a Yes/No, its Udyam number optional. A vendor
+# that already has a Udyam number is an MSME.
+VENDOR_MSME = (
+    "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS msme BOOLEAN NOT NULL DEFAULT false",
+    "UPDATE vendors SET msme = true WHERE msme = false AND COALESCE(msme_number, '') <> ''",
+)
+
 
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
@@ -284,7 +291,7 @@ def apply(engine: Engine) -> None:
         engine,
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
         + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
-        + VENDOR_GROUP_AND_TDS + E_INVOICE,
+        + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

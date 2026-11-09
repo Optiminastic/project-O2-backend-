@@ -1,11 +1,13 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.enums import VendorApprovalStatus, AllocationStatus, InvoiceStatus
 from app.schemas.fields import (
     AccountNumber,
+    Gstin,
+    LongText,
     GstRate,
     Ifsc,
     InvoiceNumber,
@@ -24,6 +26,7 @@ from app.schemas.fields import (
     check_date_order,
     check_pan_matches_gstin,
 )
+from app.services.identifiers import pan_of_gstin
 from app.services.taxation import DEFAULT_VENDOR_TDS_SECTION, TDS_SECTIONS
 
 
@@ -54,41 +57,61 @@ def _no_repeated_accounts(accounts: list[VendorBankAccountIn]) -> None:
 
 
 class VendorCreate(BaseModel):
+    """The vendor form as the PROJECT O2 sheet lays it out.
+
+    Name, email, GSTIN, address, the TDS rate, the MSME answer and at least one bank
+    account are required; the Udyam number and COI are optional. The PAN is taken
+    from the GSTIN when not sent.
+    """
+
     business_name: Name
     email: EmailStr
+    gst_number: Gstin
+    address: LongText
     phone: OptionalPhone = None
-    gst_number: OptionalGstin = None
+    pan: OptionalPan = None
+    msme: bool
     msme_number: OptionalUdyam = None
     coi: OptionalCin = None
-    pan: OptionalPan = None
-    bank_accounts: list[VendorBankAccountIn] = []
+    bank_accounts: list[VendorBankAccountIn] = Field(min_length=1)
     is_group_company: bool = False
-    default_tds_section: TdsSectionKey | None = None
+    default_tds_section: TdsSectionKey = DEFAULT_VENDOR_TDS_SECTION
 
     @model_validator(mode="after")
     def _consistent(self):
+        if not self.msme:
+            self.msme_number = None
         check_pan_matches_gstin(self.pan, self.gst_number)
+        self.pan = self.pan or pan_of_gstin(self.gst_number)
         _no_repeated_accounts(self.bank_accounts)
         return self
 
 
 class VendorUpdate(BaseModel):
+    """An edit sends only what changes, but cannot blank a required field."""
+
     business_name: Name | None = None
     email: EmailStr | None = None
+    gst_number: Gstin | None = None
+    address: LongText | None = None
     phone: OptionalPhone = None
-    gst_number: OptionalGstin = None
+    pan: OptionalPan = None
+    msme: bool | None = None
     msme_number: OptionalUdyam = None
     coi: OptionalCin = None
-    pan: OptionalPan = None
     # When sent, replaces the vendor's bank accounts. Leave out to keep them.
-    bank_accounts: list[VendorBankAccountIn] | None = None
+    bank_accounts: list[VendorBankAccountIn] | None = Field(default=None, min_length=1)
     approval_status: VendorApprovalStatus | None = None
     is_group_company: bool | None = None
     default_tds_section: TdsSectionKey | None = None
 
     @model_validator(mode="after")
     def _consistent(self):
+        if self.msme is False:
+            self.msme_number = None
         check_pan_matches_gstin(self.pan, self.gst_number)
+        if self.gst_number and not self.pan:
+            self.pan = pan_of_gstin(self.gst_number)
         _no_repeated_accounts(self.bank_accounts or [])
         return self
 
@@ -104,6 +127,7 @@ class VendorOut(BaseModel):
     phone: str | None
     address: str | None
     gst_number: str | None
+    msme: bool
     msme_number: str | None
     coi: str | None
     pan: str | None

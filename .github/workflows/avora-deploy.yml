@@ -1,0 +1,106 @@
+# Avora Secrets deploy driver for project-O2-backend (Hetzner VPS).
+#
+# Triggered by the Avora Secrets VS Code extension (workflow_dispatch, direct
+# mode) or later by the Avora backend (repository_dispatch). Fetches the env
+# content from Avora and applies it on the VPS via `avora-apply`, which
+# merge-writes /opt/project-o2/.env atomically (keeping keys Avora doesn't
+# manage), keeps the previous file as .env.avora-prev, and restarts the stack.
+#
+# Reuses the SSH secrets deploy.yml already uses:
+#   SSH_HOST, SSH_USER, SSH_KEY_B64
+# New secrets required:
+#   AVORA_URL           -> https://api.avora.optiminastic.com
+#   AVORA_DEPLOY_TOKEN  -> an Avora Personal Access Token with read access to
+#                          the "project 02" project (Dashboard -> Env Sync)
+#
+# One-time box setup (see the extension repo's deploy/README.md):
+#   - install avora-apply at /usr/local/bin/avora-apply
+#   - /etc/avora/targets.conf with a section like:
+#       [<avora-project-id>/backend]
+#       file = /opt/project-o2/.env
+#       restart_cmd = cd /opt/project-o2 && docker compose up -d
+#       write_mode = merge
+#
+# Content never appears in logs: it flows Avora -> runner file -> stdin -> box.
+
+name: Avora deploy
+
+on:
+  repository_dispatch:
+    types: [avora-deploy]
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Avora project id"
+        required: true
+      environment:
+        description: "Environment (e.g. backend)"
+        required: true
+
+concurrency:
+  group: avora-${{ github.event.client_payload.project_id || inputs.project_id }}-${{ github.event.client_payload.environment || inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      AVORA_URL: ${{ secrets.AVORA_URL }}
+      AVORA_DEPLOY_TOKEN: ${{ secrets.AVORA_DEPLOY_TOKEN }}
+      DEPLOYMENT_ID: ${{ github.event.client_payload.deployment_id }}
+      PROJECT_ID: ${{ github.event.client_payload.project_id || inputs.project_id }}
+      ENVIRONMENT: ${{ github.event.client_payload.environment || inputs.environment }}
+    steps:
+      - name: Fetch env content from Avora
+        run: |
+          set -euo pipefail
+          if [ -n "${DEPLOYMENT_ID:-}" ]; then
+            curl -sfS \
+              -H "Authorization: Bearer $AVORA_DEPLOY_TOKEN" \
+              "$AVORA_URL/api/v1/envsync/agent/deployments/$DEPLOYMENT_ID" > job.json
+            jq -r .content job.json > env.content
+          else
+            curl -sfS \
+              -H "Authorization: Bearer $AVORA_DEPLOY_TOKEN" \
+              "$AVORA_URL/api/v1/envsync/projects/$PROJECT_ID/env?environment=$ENVIRONMENT" > head.json
+            jq -r .content head.json > env.content
+          fi
+          test -s env.content
+
+      - name: Apply on the VPS
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s' "$SSH_KEY_B64" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              "$SSH_USER@$SSH_HOST" \
+              avora-apply "$PROJECT_ID" "$ENVIRONMENT" \
+              < env.content > result.json
+          jq -e '.status == "success"' result.json > /dev/null
+
+      - name: Report result to Avora (backend mode only)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOYMENT_ID:-}" ]; then
+            echo "direct mode - the run status is the status"
+            exit 0
+          fi
+          if [ -s result.json ]; then
+            BODY=$(jq -c '{status, message, server_env_hash: (.server_env_hash // null)}' result.json)
+          else
+            BODY='{"status":"failed","message":"workflow failed before avora-apply ran","server_env_hash":null}'
+          fi
+          curl -sfS -X POST \
+            -H "Authorization: Bearer $AVORA_DEPLOY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" \
+            "$AVORA_URL/api/v1/envsync/agent/deployments/$DEPLOYMENT_ID/result"
