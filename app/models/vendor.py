@@ -153,6 +153,11 @@ class VendorInvoice(Base, TimestampMixin):
     commission_amount: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     # What the vendor is paid for this bill: net_payable - commission_amount.
     amount_payable: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # The supplier as printed on this bill (checked against the GST registry when entered).
+    # vendor_gstin above is the GSTIN on the bill. Empty on bills from before these were asked.
+    supplier_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    supplier_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supplier_coi: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # The vendor's own invoice document, when uploaded.
     document_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     document_name: Mapped[str | None] = mapped_column(String(200), nullable=True)

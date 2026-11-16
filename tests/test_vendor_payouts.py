@@ -188,3 +188,24 @@ def test_vendor_invoice_document_upload_and_download(client, users, vendor):
     assert res.json()["document_name"] == "B-1.pdf"
     got = client.get(url, headers=h)
     assert got.status_code == 200 and got.content == b"%PDF-1.4 demo"
+
+
+# ---------- supplier details on the bill ----------
+
+def test_bill_keeps_the_supplier_details_as_printed(client, users, vendor):
+    b = bill(client, users["exec"], vendor.id, [(assignment_for(vendor.id), 1000)],
+             supplier_gstin="27aagfq1234c1zo", supplier_name="Quanta Research LLP",
+             supplier_address="12 MG Road, Bengaluru 560001", supplier_coi="AAB-1234").json()
+    assert (b["vendor_gstin"], b["supplier_name"], b["supplier_address"], b["supplier_coi"]) == (
+        "27AAGFQ1234C1ZO", "Quanta Research LLP", "12 MG Road, Bengaluru 560001", "AAB-1234",
+    )
+
+
+def test_bill_supplier_details_default_to_the_vendor(client, users, vendor):
+    b = bill(client, users["exec"], vendor.id, [(assignment_for(vendor.id), 1000)]).json()
+    assert (b["vendor_gstin"], b["supplier_name"]) == ("29AAGFQ1234C1Z5", "Quanta Research")
+
+
+def test_bill_rejects_a_bad_supplier_gstin(client, users, vendor):
+    res = bill(client, users["exec"], vendor.id, [(assignment_for(vendor.id), 1000)], supplier_gstin="29AAGFQ1234C1ZX")
+    assert res.status_code == 422

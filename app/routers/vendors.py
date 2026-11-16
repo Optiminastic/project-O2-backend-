@@ -260,7 +260,11 @@ def create_vendor_invoice(
     gst = compute_gst(amount, payload.gst_rate, payload.is_interstate)
     section = TDS_SECTIONS[payload.tds_section]
     inv = VendorInvoice(
-        **payload.model_dump(exclude={"lines"}),
+        **payload.model_dump(exclude={"lines", "supplier_gstin", "supplier_name", "supplier_address", "supplier_coi"}),
+        # The supplier as on the bill, falling back to the vendor's own details.
+        supplier_name=payload.supplier_name or vendor.business_name,
+        supplier_address=payload.supplier_address or vendor.address,
+        supplier_coi=payload.supplier_coi or vendor.coi,
         project_id=assignments[0].project_vendor.project_id,
         invoice_amount=amount,
         lines=[VendorInvoiceLine(assignment=a, amount=line.amount) for a, line in zip(assignments, payload.lines)],
@@ -268,7 +272,7 @@ def create_vendor_invoice(
         cgst=gst.cgst,
         sgst=gst.sgst,
         igst=gst.igst,
-        vendor_gstin=vendor.gst_number,
+        vendor_gstin=payload.supplier_gstin or vendor.gst_number,
         tds_applicable=section.rate > 0,
         tds_rate=section.rate,
     )
