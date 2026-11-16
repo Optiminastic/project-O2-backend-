@@ -20,6 +20,8 @@ class PaymentApproval(Base, TimestampMixin):
     vendor_invoice_id: Mapped[int | None] = mapped_column(
         ForeignKey("vendor_invoices.id"), nullable=True
     )
+    # The vendor paid, for payouts raised against vendor bills.
+    vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id"), nullable=True, index=True)
     tax_deductions: Mapped[float] = mapped_column(Float, default=0.0)
     net_payable: Mapped[float] = mapped_column(Float, default=0.0)
     bank_details: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -37,6 +39,37 @@ class PaymentApproval(Base, TimestampMixin):
     actions: Mapped[list["ApprovalAction"]] = relationship(
         back_populates="approval", cascade="all, delete-orphan", order_by="ApprovalAction.id"
     )
+    # How a vendor payout is split over the bills (and their service lines) it settles.
+    allocations: Mapped[list["PayoutAllocation"]] = relationship(
+        back_populates="approval", cascade="all, delete-orphan", order_by="PayoutAllocation.id"
+    )
+
+
+class PayoutAllocation(Base):
+    """The part of a vendor payout that settles one service line (UPS code) of one bill.
+
+    ``line_id`` is empty only for bills recorded before per-service lines existed.
+    """
+
+    __tablename__ = "payout_allocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    approval_id: Mapped[int] = mapped_column(ForeignKey("payment_approvals.id", ondelete="CASCADE"), index=True)
+    vendor_invoice_id: Mapped[int] = mapped_column(ForeignKey("vendor_invoices.id"), index=True)
+    line_id: Mapped[int | None] = mapped_column(ForeignKey("vendor_invoice_lines.id"), nullable=True, index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+
+    approval: Mapped["PaymentApproval"] = relationship(back_populates="allocations")
+    invoice: Mapped["VendorInvoice"] = relationship()  # noqa: F821
+    line: Mapped["VendorInvoiceLine | None"] = relationship()  # noqa: F821
+
+    @property
+    def invoice_number(self) -> str:
+        return self.invoice.invoice_number
+
+    @property
+    def code(self) -> str | None:
+        return self.line.code if self.line else None
 
 
 class ApprovalAction(Base, TimestampMixin):

@@ -7,7 +7,7 @@ import pytest
 from app.models import Service
 from app.services.identifiers import gstin_check_char, gstin_error
 from app.services.numbering import business_date
-from tests.conftest import auth_header, project_id_for, vendor_body
+from tests.conftest import assignment_for, auth_header, client_body, project_id_for, vendor_body
 from tests.test_payment_bank import issued_invoice
 
 GSTIN = "27AAGFQ1234C1ZO"  # valid checksum; PAN AAGFQ1234C
@@ -38,7 +38,7 @@ def test_bad_gstins_say_why(gstin, reason):
 
 
 def new_client(client, user, **fields):
-    body = {"business_name": "Globex", "email": "ap@globex.example", **fields}
+    body = client_body(**fields)
     return client.post("/api/clients", json=body, headers=auth_header(user))
 
 
@@ -64,9 +64,36 @@ def test_client_rejects_bad_details(client, users, field, value):
 
 
 def test_blank_optional_fields_are_stored_as_empty(client, users):
-    res = new_client(client, users["exec"], gst_number="", phone="  ", coi="")
+    res = new_client(client, users["exec"], phone="  ")
     assert res.status_code == 201, res.text
-    assert res.json()["gst_number"] is None
+    assert res.json()["phone"] is None
+
+
+@pytest.mark.parametrize("field", ["business_name", "email", "gst_number", "billing_address", "coi", "msme"])
+def test_every_client_form_field_is_required(client, users, field):
+    body = client_body()
+    del body[field]
+    assert client.post("/api/clients", json=body, headers=auth_header(users["exec"])).status_code == 422, field
+    for blank in ("", "   "):
+        if field != "msme":
+            assert new_client(client, users["exec"], **{field: blank}).status_code == 422, (field, blank)
+
+
+def test_an_msme_client_needs_its_udyam_number(client, users):
+    assert new_client(client, users["exec"], msme=True).status_code == 422
+    made = new_client(client, users["exec"], msme=True, msme_number="UDYAM-MH-26-0012345")
+    assert made.status_code == 201, made.text
+
+
+def test_a_client_edit_cannot_blank_a_required_field(client, users):
+    made = new_client(client, users["exec"]).json()
+    url = f"/api/clients/{made['id']}"
+    headers = auth_header(users["manager"])
+    for change in ({"gst_number": ""}, {"billing_address": ""}, {"coi": ""}, {"msme": True}):
+        assert client.patch(url, json=change, headers=headers).status_code == 422, change
+    kept = client.patch(url, json={"gst_number": None, "coi": None}, headers=headers)
+    assert kept.status_code == 200, kept.text
+    assert (kept.json()["gst_number"], kept.json()["coi"]) == (made["gst_number"], made["coi"])
 
 
 # ---------- vendors and agents ----------
@@ -178,13 +205,23 @@ def vendor_id(client, users):
     {"invoice_number": "B#1"},
     {"invoice_date": TOMORROW},
     {"invoice_date": "2017-06-30"},
-    {"invoice_amount": 0},
+    {"line_amount": 0},
+    {"line_amount": -5},
+    {"lines": []},
     {"gst_rate": 15},
 ])
 def test_vendor_bill_rejects_bad_input(client, users, vendor_id, fields):
+    line = {"assignment_id": assignment_for(vendor_id), "amount": fields.pop("line_amount", 10000)}
     body = {"vendor_id": vendor_id, "invoice_number": "QR/26-27/001", "invoice_date": TODAY.isoformat(),
-            "invoice_amount": 10000, **fields}
+            "lines": [line], **fields}
     assert client.post("/api/vendors/invoices", json=body, headers=auth_header(users["exec"])).status_code == 422
+
+
+def test_a_valid_vendor_bill_is_accepted(client, users, vendor_id):
+    line = {"assignment_id": assignment_for(vendor_id), "amount": 10000}
+    body = {"vendor_id": vendor_id, "invoice_number": "QR/26-27/001", "invoice_date": TODAY.isoformat(), "lines": [line]}
+    res = client.post("/api/vendors/invoices", json=body, headers=auth_header(users["exec"]))
+    assert res.status_code == 201, res.text
 
 
 # ---------- payment approvals ----------

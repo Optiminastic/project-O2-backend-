@@ -40,6 +40,15 @@ class VendorBankAccountIn(BaseModel):
     ifsc_code: Ifsc
 
 
+class VendorServiceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    sac_code: str | None
+    is_active: bool
+
+
 class VendorBankAccountOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,6 +85,10 @@ class VendorCreate(BaseModel):
     bank_accounts: list[VendorBankAccountIn] = Field(min_length=1)
     is_group_company: bool = False
     default_tds_section: TdsSectionKey = DEFAULT_VENDOR_TDS_SECTION
+    # Optiminastic's commission (%), kept back from what the vendor is paid; prefilled on each bill.
+    commission_rate: Percent = 0.0
+    # Catalogue services the vendor provides; editable later from the vendor's page.
+    service_ids: list[int] = []
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -104,6 +117,7 @@ class VendorUpdate(BaseModel):
     approval_status: VendorApprovalStatus | None = None
     is_group_company: bool | None = None
     default_tds_section: TdsSectionKey | None = None
+    commission_rate: Percent | None = None
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -139,7 +153,15 @@ class VendorOut(BaseModel):
     is_verified: bool
     is_group_company: bool
     default_tds_section: str | None
+    commission_rate: float = 0.0
+    services: list[VendorServiceOut] = []
     created_at: datetime
+
+
+class VendorServicesIn(BaseModel):
+    """The catalogue services a vendor provides. Replaces the vendor's list."""
+
+    service_ids: list[int]
 
 
 class AllocationCreate(BaseModel):
@@ -182,17 +204,39 @@ class AllocationOut(BaseModel):
 
 
 
+class VendorInvoiceLineIn(BaseModel):
+    """What the bill charges against one of the vendor's project service codes, before GST."""
+
+    assignment_id: int
+    amount: PositiveMoney
+
+
 class VendorInvoiceCreate(BaseModel):
-    """A vendor's bill. GST and TDS are worked out from the rate, the state and the TDS section."""
+    """A vendor's bill. GST and TDS are worked out from the rate, the state and the TDS section.
+
+    Every bill charges one or more of the vendor's project service codes, all on
+    one project; the bill's amount is the sum of its lines.
+    """
 
     vendor_id: int
-    project_id: int | None = None
     invoice_number: InvoiceNumber
     invoice_date: PastDate
-    invoice_amount: PositiveMoney  # before GST
+    lines: list[VendorInvoiceLineIn] = Field(min_length=1)
     gst_rate: GstRate = 18.0
     is_interstate: bool = False
     tds_section: TdsSectionKey = DEFAULT_VENDOR_TDS_SECTION
+    # Optiminastic's commission (%) on this bill; left out, the vendor's usual rate.
+    commission_rate: Percent | None = None
+
+
+class VendorInvoiceLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    assignment_id: int
+    code: str
+    service_title: str
+    amount: float
 
 
 class VendorInvoiceOut(BaseModel):
@@ -218,6 +262,13 @@ class VendorInvoiceOut(BaseModel):
     tds_deposited_on: date | None
     tds_challan_number: str | None
     net_payable: float
+    commission_rate: float = 0.0
+    commission_amount: float = 0.0
+    # What the vendor is paid: net payable less Optiminastic's commission.
+    amount_payable: float = 0.0
+    document_name: str | None = None
     report_submitted: bool
     status: InvoiceStatus
+    # Empty only on bills recorded before vendors were assigned per service.
+    lines: list[VendorInvoiceLineOut] = []
     created_at: datetime

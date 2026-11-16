@@ -49,3 +49,11 @@ def test_receipts_ledger_shows_the_bank(client, users, client_row):
     rows = client.get("/api/taxation/receipts", headers=auth_header(users["manager"])).json()
     assert rows[0]["bank_name"] == "ICICI Bank"
     assert rows[0]["payment_mode"] == "Bank"
+
+
+def test_receipts_ledger_names_the_proforma_the_tax_invoice_came_from(client, users, client_row):
+    inv = issued_invoice(client, users, client_row)
+    pay(client, users["exec"], inv["id"], bank_name="ICICI Bank")
+    row = client.get("/api/taxation/receipts", headers=auth_header(users["manager"])).json()[0]
+    assert row["proforma_number"] == inv["proforma_number"]
+    assert row["proforma_number"] and row["proforma_number"] != row["invoice_number"]

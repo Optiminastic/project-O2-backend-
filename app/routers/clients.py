@@ -5,11 +5,14 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.deps import get_current_user, require_roles
 from app.models import Client, User, UserRole
-from app.schemas.client import ClientCreate, ClientUpdate, ClientOut
+from app.schemas.client import MSME_NUMBER_REQUIRED, ClientCreate, ClientUpdate, ClientOut
 from app.services.audit import log_action
 from app.services.agents import resolve_agent_id
 
 router = APIRouter(prefix="/clients", tags=["clients"])
+
+# On the intake form and so never cleared by an edit.
+REQUIRED_FIELDS = ("business_name", "email", "billing_address", "gst_number", "coi")
 
 
 @router.get("", response_model=list[ClientOut])
@@ -70,7 +73,12 @@ def update_client(
     if changes.get("msme") is False:
         changes["msme_number"] = None  # the Udyam number belongs only to an MSME
     for k, v in changes.items():
+        if v is None and k in REQUIRED_FIELDS:
+            continue  # an edit cannot blank a required field
         setattr(client, k, v)
+    if client.msme and not client.msme_number:
+        db.rollback()
+        raise HTTPException(422, MSME_NUMBER_REQUIRED)
     log_action(db, user, "Updated client", "Client", client.id)
     db.commit()
     db.refresh(client)

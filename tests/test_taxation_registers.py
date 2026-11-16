@@ -7,7 +7,7 @@ import pytest
 from app.models import ClientInvoice, InvoiceStatus, Payment, Vendor
 from app.services.taxation import tds_deposit_due_date
 from app.services.numbering import business_date
-from tests.conftest import auth_header, default_service_id
+from tests.conftest import assignment_for, auth_header, default_service_id
 
 
 def sale(db, client_row, *, number, invoice_date, taxable=1000.0, interstate=False, status=InvoiceStatus.SENT):
@@ -38,8 +38,9 @@ def vendors(db):
     return rows
 
 
-def purchase(client, user, vendor, **overrides):
-    body = {"vendor_id": vendor.id, "invoice_number": "B-1", "invoice_date": "2026-10-10", "invoice_amount": 10000,
+def purchase(client, user, vendor, amount=10000, **overrides):
+    line = {"assignment_id": assignment_for(vendor.id), "amount": amount}
+    body = {"vendor_id": vendor.id, "invoice_number": "B-1", "invoice_date": "2026-10-10", "lines": [line],
             "gst_rate": 18, "is_interstate": False, "tds_section": "194C_FIRM", **overrides}
     return client.post("/api/vendors/invoices", json=body, headers=auth_header(user))
 

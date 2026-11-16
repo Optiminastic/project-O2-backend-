@@ -1,7 +1,8 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, Enum as SAEnum, Float, ForeignKey, Index, String, Table, Text, UniqueConstraint,
+    Boolean, Column, Date, DateTime, Enum as SAEnum, Float, ForeignKey, Index, Integer, String, Table, Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -45,6 +46,8 @@ class Project(Base, TimestampMixin):
     expected_report_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[AllocationStatus] = mapped_column(SAEnum(AllocationStatus), default=AllocationStatus.NOT_STARTED)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # The last "V01" handed to a vendor on this project; never reused, even after a vendor is removed.
+    last_vendor_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     client: Mapped["Client | None"] = relationship()  # noqa: F821
     service: Mapped["Service | None"] = relationship()  # noqa: F821
@@ -57,7 +60,7 @@ class Project(Base, TimestampMixin):
 
 
 class ProjectVendor(Base, TimestampMixin):
-    """A vendor's share of a project, and the work order that commits it."""
+    """A vendor on a project: the services they deliver, and the one work order that commits them."""
 
     __tablename__ = "project_vendors"
     __table_args__ = (UniqueConstraint("project_id", "vendor_id", name="uq_project_vendors_project_vendor"),)
@@ -65,8 +68,14 @@ class ProjectVendor(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     vendor_id: Mapped[int] = mapped_column(ForeignKey("vendors.id"), index=True)
+    # No longer set: a vendor's share follows from the cost of its services. Kept for old rows.
     work_percent: Mapped[float] = mapped_column(Float, default=0.0)
-    agreed_cost: Mapped[float] = mapped_column(Float, default=0.0)  # before GST
+    # The sum of the services' agreed costs, before GST.
+    agreed_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    # The "V01" in this vendor's service codes on the project; never reused.
+    vendor_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # The last "S01" handed out to this vendor's services here; never reused.
+    last_service_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Numbered (WO/<FY>/NNNN) the first time the work order is produced; never changes after.
     work_order_number: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True)
@@ -77,3 +86,26 @@ class ProjectVendor(Base, TimestampMixin):
 
     project: Mapped["Project"] = relationship(back_populates="vendors")
     vendor: Mapped["Vendor"] = relationship()  # noqa: F821
+    services: Mapped[list["ProjectVendorService"]] = relationship(
+        back_populates="project_vendor", cascade="all, delete-orphan", order_by="ProjectVendorService.id"
+    )
+
+
+class ProjectVendorService(Base, TimestampMixin):
+    """One service a vendor delivers on a project, under its own permanent code.
+
+    The code (e.g. PRJ-0042-V01-S02) goes on the work order, and every vendor
+    bill must charge against one or more codes.
+    """
+
+    __tablename__ = "project_vendor_services"
+    __table_args__ = (UniqueConstraint("project_vendor_id", "service_id", name="uq_project_vendor_services_service"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_vendor_id: Mapped[int] = mapped_column(ForeignKey("project_vendors.id", ondelete="CASCADE"), index=True)
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), index=True)
+    code: Mapped[str] = mapped_column(String(60), unique=True)
+    agreed_cost: Mapped[float] = mapped_column(Float, default=0.0)  # before GST
+
+    project_vendor: Mapped["ProjectVendor"] = relationship(back_populates="services")
+    service: Mapped["Service"] = relationship()  # noqa: F821

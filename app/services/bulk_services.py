@@ -1,7 +1,7 @@
 """Bulk service upload: read a spreadsheet of services and check every row before any is created.
 
-All or nothing, like the bulk invoice upload. A SAC code shared with another
-service is only a warning: GST lets several services carry the same SAC.
+All or nothing, like the bulk invoice upload. Titles and SAC codes are both
+unique: one already in the catalogue, or repeated in the file, is an error.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def check_rows(db: Session, records: list[dict[str, object]]) -> list[ServiceRow
         _check_title(check, taken_titles)
         check.sac_code = _sac(record.get(SAC), check.errors)
         if check.sac_code and check.sac_code in sac_users:
-            check.warnings.append(f"SAC {check.sac_code} is already used by {', '.join(sac_users[check.sac_code])}.")
+            check.errors.append(f"SAC {check.sac_code} is already used by {', '.join(sac_users[check.sac_code])}.")
         checks.append(check)
 
     _flag_repeats(checks)
@@ -86,7 +86,7 @@ def _sac(value: object, errors: list[str]) -> str | None:
 
 
 def _flag_repeats(checks: list[ServiceRowCheck]) -> None:
-    """A title twice in the file is an error; the same SAC twice is a warning."""
+    """A title or a SAC code twice in the file is an error."""
     titles: dict[str, int] = {}
     sacs: dict[str, int] = {}
     for c in checks:
@@ -96,7 +96,7 @@ def _flag_repeats(checks: list[ServiceRowCheck]) -> None:
         elif key:
             titles[key] = c.row
         if c.sac_code and c.sac_code in sacs:
-            c.warnings.append(f"Same SAC as row {sacs[c.sac_code]}.")
+            c.errors.append(f"Same SAC as row {sacs[c.sac_code]}.")
         elif c.sac_code:
             sacs[c.sac_code] = c.row
 
@@ -127,7 +127,7 @@ _INSTRUCTIONS = (
     "One row = one service in the catalogue.",
     "",
     "Title (required): what you bill for, as it should print on the invoice. Titles must be unique.",
-    "SAC code (optional): 4 to 8 digits, e.g. 998311. Several services may share a SAC; the preview points it out.",
+    "SAC code (optional): 4 to 8 digits, e.g. 998311. Each SAC code may be used by only one service.",
     "",
     f"At most {MAX_ROWS} rows per file. Nothing is created until every row is correct.",
 )

@@ -51,13 +51,15 @@ def test_clean_file_previews_ready_and_creates_every_service(client, db, users):
     assert db.query(AuditLog).filter(AuditLog.action == "Bulk uploaded services").count() == 1
 
 
-def test_shared_sac_is_a_warning_not_an_error(client, users):
-    # 998311 belongs to the seeded service; the second row repeats the first row's SAC.
+def test_a_sac_already_used_or_repeated_blocks_the_upload(client, users):
+    # 998311 belongs to the seeded service; Compliance repeats Payroll's SAC (sheet row 3).
     body = preview(client, users["manager"], csv_file("Tax advisory,998311", "Payroll,998365", "Compliance,998365")).json()
-    assert body["ready"] is True
-    first, _, third = body["rows"]
-    assert any(DEFAULT_SERVICE_TITLE in w for w in first["warnings"])
-    assert any("row 3" in w for w in third["warnings"])
+    assert body["ready"] is False
+    assert body["error_count"] == 2
+    first, second, third = body["rows"]
+    assert any(DEFAULT_SERVICE_TITLE in e for e in first["errors"])
+    assert second["errors"] == []
+    assert any("row 3" in e for e in third["errors"])
 
 
 def test_existing_or_repeated_titles_block_the_whole_upload(client, db, users):

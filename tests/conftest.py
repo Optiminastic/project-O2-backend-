@@ -59,6 +59,42 @@ def project_id_for(client: Client | int, service_id: int | None = None) -> int:
         return project.id
 
 
+def assignment_for(vendor_id: int, client_id: int | None = None, agreed_cost: float = 1_000_000) -> int:
+    """The id of an assigned project service (the default service) for the vendor, ready to bill.
+
+    One per (vendor, client); the vendor is given the service if it does not provide it yet.
+    With no client, a stand-in client is used.
+    """
+    from app.models import ProjectVendor, ProjectVendorService, Vendor  # noqa: PLC0415
+
+    if client_id is None:
+        with SessionLocal() as session:
+            stand_in = session.query(Client).filter(Client.email == "projects@standin.example").first()
+            if stand_in is None:
+                stand_in = Client(business_name="Stand-in Client", email="projects@standin.example",
+                                  agent_id=house_agent(session).id)
+                session.add(stand_in)
+                session.commit()
+            client_id = stand_in.id
+    project_id = project_id_for(client_id)
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        service = session.get(Service, default_service_id())
+        vendor = session.get(Vendor, vendor_id)
+        if service not in vendor.services:
+            vendor.services.append(service)
+        pv = next((x for x in project.vendors if x.vendor_id == vendor_id), None)
+        if pv is None:
+            project.last_vendor_seq = (project.last_vendor_seq or 0) + 1
+            pv = ProjectVendor(vendor_id=vendor_id, vendor_seq=project.last_vendor_seq, last_service_seq=1,
+                               agreed_cost=agreed_cost)
+            pv.services = [ProjectVendorService(service_id=service.id, agreed_cost=agreed_cost,
+                                                code=f"{project.code}-V{pv.vendor_seq:02d}-S01")]
+            project.vendors.append(pv)
+            session.commit()
+        return pv.services[0].id
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _schema():
     Base.metadata.drop_all(bind=engine)
@@ -149,5 +185,18 @@ def vendor_body(**overrides) -> dict:
         "msme_number": "udyam-mh-26-0012345",
         "coi": "U72900MH2015PTC123456",
         "bank_accounts": [VENDOR_HDFC],
+        **overrides,
+    }
+
+
+def client_body(**overrides) -> dict:
+    """A complete client as the intake form sends it: every form field is required."""
+    return {
+        "business_name": "Globex",
+        "email": "ap@globex.example",
+        "gst_number": "27AAGFQ1234C1ZO",
+        "billing_address": "12 Nariman Point, Mumbai 400021",
+        "coi": "U72900MH2015PTC123456",
+        "msme": False,
         **overrides,
     }

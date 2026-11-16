@@ -21,10 +21,10 @@ from app.models.bank import CompanyBank
 from app.models.data_upgrade import DataUpgrade
 from app.models.client import Client
 from app.models.invoice import ClientInvoice, InvoiceLine, Payment, InvoiceLink, DocumentSequence
-from app.models.vendor import Vendor, VendorAllocation, VendorBankAccount, VendorInvoice
-from app.models.project import Project, ProjectVendor
+from app.models.vendor import Vendor, VendorAllocation, VendorBankAccount, VendorInvoice, VendorInvoiceLine
+from app.models.project import Project, ProjectVendor, ProjectVendorService
 from app.models.report import VendorReport, EmailLog
-from app.models.approval import PaymentApproval, ApprovalAction
+from app.models.approval import PaymentApproval, ApprovalAction, PayoutAllocation
 from app.models.verification import BankStatement, BankTransaction
 from app.models.audit import AuditLog
 
@@ -59,11 +59,14 @@ __all__ = [
     "VendorBankAccount",
     "Project",
     "ProjectVendor",
+    "ProjectVendorService",
     "VendorInvoice",
+    "VendorInvoiceLine",
     "VendorReport",
     "EmailLog",
     "PaymentApproval",
     "ApprovalAction",
+    "PayoutAllocation",
     "BankStatement",
     "BankTransaction",
     "AuditLog",

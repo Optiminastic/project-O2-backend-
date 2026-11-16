@@ -10,7 +10,7 @@ import pytest
 from app.models import Client, ClientInvoice, Project, Service
 from app.services.agents import house_agent
 from app.services.numbering import business_date
-from tests.conftest import auth_header, default_service_id
+from tests.conftest import auth_header, client_body, default_service_id
 from tests.test_payment_bank import issued_invoice
 
 
@@ -242,7 +242,7 @@ def test_receipt_of_the_full_amount_counts_no_tds(client, users, client_row):
 
 
 def test_msme_number_is_kept_only_for_an_msme(client, users):
-    base = {"business_name": "Small Co", "email": "a@small.example"}
+    base = client_body(business_name="Small Co", email="a@small.example")
     made = client.post(
         "/api/clients", json={**base, "msme": True, "msme_number": "UDYAM-MH-26-0012345"},
         headers=auth_header(users["manager"]),

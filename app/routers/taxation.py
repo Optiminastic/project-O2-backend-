@@ -137,6 +137,7 @@ def receipts(
             id=p.id,
             invoice_id=p.invoice_id,
             invoice_number=p.invoice.invoice_number,
+            proforma_number=p.invoice.proforma_number,
             client_id=p.invoice.client_id,
             amount=p.amount,
             payment_date=p.payment_date,

@@ -1,11 +1,20 @@
 from datetime import date
 
-from sqlalchemy import String, Text, Float, Boolean, Date, ForeignKey, Enum as SAEnum
+from sqlalchemy import Column, String, Table, Text, Float, Boolean, Date, ForeignKey, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.mixins import TimestampMixin
 from app.models.enums import VendorApprovalStatus, AllocationStatus, InvoiceStatus
+
+
+# The catalogue services a vendor provides. A vendor is assigned to a project only for these.
+vendor_services = Table(
+    "vendor_services",
+    Base.metadata,
+    Column("vendor_id", ForeignKey("vendors.id", ondelete="CASCADE"), primary_key=True),
+    Column("service_id", ForeignKey("services.id"), primary_key=True, index=True),
+)
 
 
 class Vendor(Base, TimestampMixin):
@@ -47,6 +56,9 @@ class Vendor(Base, TimestampMixin):
     is_group_company: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # The TDS section (key of TDS_SECTIONS) prefilled on this vendor's invoices; None means the usual default.
     default_tds_section: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Optiminastic's commission, a percentage of the bill before GST, kept back from the vendor's payout.
+    # Prefilled on each bill, where it can be changed.
+    commission_rate: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
 
     bank_accounts: Mapped[list["VendorBankAccount"]] = relationship(
         back_populates="vendor", cascade="all, delete-orphan", order_by="VendorBankAccount.id"
@@ -56,6 +68,9 @@ class Vendor(Base, TimestampMixin):
     )
     invoices: Mapped[list["VendorInvoice"]] = relationship(
         back_populates="vendor", cascade="all, delete-orphan"
+    )
+    services: Mapped[list["Service"]] = relationship(  # noqa: F821
+        secondary=vendor_services, order_by="Service.title"
     )
 
 
@@ -131,9 +146,45 @@ class VendorInvoice(Base, TimestampMixin):
     # Deposit of the TDS above with the government (challan).
     tds_deposited_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     tds_challan_number: Mapped[str | None] = mapped_column(String(60), nullable=True)
-    net_payable: Mapped[float] = mapped_column(Float, default=0.0)
+    net_payable: Mapped[float] = mapped_column(Float, default=0.0)  # amount + GST - TDS
+    # Optiminastic's commission on this bill: a percentage of the amount before GST. GST and
+    # TDS stay on the vendor's full bill; the commission is kept back from what the vendor is paid.
+    commission_rate: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    commission_amount: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # What the vendor is paid for this bill: net_payable - commission_amount.
+    amount_payable: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # The vendor's own invoice document, when uploaded.
+    document_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    document_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     report_submitted: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[InvoiceStatus] = mapped_column(SAEnum(InvoiceStatus), default=InvoiceStatus.PENDING)
 
     vendor: Mapped["Vendor"] = relationship(back_populates="invoices")
+    # What the bill charges against each assigned project service. Empty only on
+    # bills recorded before vendors were assigned per service.
+    lines: Mapped[list["VendorInvoiceLine"]] = relationship(
+        back_populates="invoice", cascade="all, delete-orphan", order_by="VendorInvoiceLine.id"
+    )
+
+
+class VendorInvoiceLine(Base):
+    """The part of a vendor bill charged against one project service code."""
+
+    __tablename__ = "vendor_invoice_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    vendor_invoice_id: Mapped[int] = mapped_column(ForeignKey("vendor_invoices.id", ondelete="CASCADE"), index=True)
+    assignment_id: Mapped[int] = mapped_column(ForeignKey("project_vendor_services.id"), index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)  # before GST
+
+    invoice: Mapped["VendorInvoice"] = relationship(back_populates="lines")
+    assignment: Mapped["ProjectVendorService"] = relationship()  # noqa: F821
+
+    @property
+    def code(self) -> str:
+        return self.assignment.code
+
+    @property
+    def service_title(self) -> str:
+        return self.assignment.service.title

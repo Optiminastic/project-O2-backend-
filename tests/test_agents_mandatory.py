@@ -2,7 +2,7 @@
 
 from app.models import Agent
 from app.services.agents import HOUSE_AGENT_NAME, ensure_house_agent, house_agent
-from tests.conftest import auth_header, project_id_for
+from tests.conftest import auth_header, client_body, project_id_for
 
 
 def make_agent(db, name="Techcores", rate=5.0) -> Agent:
@@ -14,7 +14,7 @@ def make_agent(db, name="Techcores", rate=5.0) -> Agent:
 
 
 def new_client(client, user, **overrides):
-    body = {"business_name": "Globex", "email": "ap@globex.example", **overrides}
+    body = client_body(**overrides)
     res = client.post("/api/clients", json=body, headers=auth_header(user))
     assert res.status_code == 201, res.text
     return res.json()
@@ -78,7 +78,7 @@ def test_client_keeps_the_chosen_agent(client, users, db):
 
 def test_client_with_unknown_agent_is_rejected(client, users):
     res = client.post(
-        "/api/clients", json={"business_name": "X", "email": "x@x.example", "agent_id": 9999}, headers=auth_header(users["exec"])
+        "/api/clients", json=client_body(agent_id=9999), headers=auth_header(users["exec"])
     )
     assert res.status_code == 404
 

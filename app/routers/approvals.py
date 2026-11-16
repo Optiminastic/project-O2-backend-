@@ -6,7 +6,11 @@ from app.database import get_db
 from app.core.deps import require_roles
 from app.core.rbac import NON_EXEC
 from app.models import PaymentApproval, User, UserRole, ApprovalStatus, Vendor, VendorInvoice
-from app.schemas.misc import ApprovalCreate, ApprovalOut, ApprovalDetail, ApprovalDecision, PaymentRelease
+from app.schemas.misc import (
+    ApprovalCreate, ApprovalOut, ApprovalDetail, ApprovalDecision, PaymentRelease, VendorPayoutCreate,
+)
+from app.services import vendor_payouts
+from app.services.group_companies import assert_visible
 from app.services import approval as approval_svc
 from app.services.audit import log_action
 from app.services.group_companies import sees_group_companies
@@ -47,6 +51,29 @@ def create_approval(
     return approval
 
 
+@router.post("/vendor-payout", response_model=ApprovalDetail, status_code=201)
+def create_vendor_payout(
+    payload: VendorPayoutCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*NON_EXEC)),
+):
+    """An outward payment to a vendor for some of its bills.
+
+    It cannot be more than those bills still owe, and is split equally across
+    their service lines (UPS codes). It then goes for sign-off like any payout.
+    """
+    vendor = assert_visible(db.get(Vendor, payload.vendor_id), user)
+    approval = vendor_payouts.create_vendor_payout(
+        db, user, vendor, payload.vendor_invoice_ids, payload.amount, payload.purpose, payload.bank_details,
+    )
+    db.flush()
+    log_action(db, user, "Created vendor payout request", "PaymentApproval", approval.id,
+               f"{vendor.business_name}: {payload.amount:,.2f}")
+    db.commit()
+    db.refresh(approval)
+    return approval
+
+
 @router.get("/{approval_id}", response_model=ApprovalDetail)
 def get_approval(approval_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
     return _get(db, approval_id, user)
@@ -72,6 +99,7 @@ def _get(db: Session, approval_id: int, user: User) -> PaymentApproval:
 @router.post("/{approval_id}/submit", response_model=ApprovalDetail)
 def submit(approval_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
     approval = _get(db, approval_id, user)
+    vendor_payouts.assert_still_within_due(db, approval)
     approval_svc.submit_for_approval(db, approval, user)
     db.commit()
     db.refresh(approval)
@@ -102,6 +130,8 @@ def release(
 ):
     approval = _get(db, approval_id, user)
     approval_svc.release_payment(db, approval, user, payload.payment_reference)
+    db.flush()
+    vendor_payouts.refresh_bill_status(db, approval)
     db.commit()
     db.refresh(approval)
     return approval

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.enums import ReportReviewStatus, ApprovalStatus, VerificationStatus, PaymentMode
 from app.schemas.fields import (
@@ -118,6 +118,7 @@ class ApprovalOut(BaseModel):
     amount: float
     purpose: str | None
     vendor_invoice_id: int | None
+    vendor_id: int | None = None
     tax_deductions: float
     net_payable: float
     bank_details: str | None
@@ -127,6 +128,53 @@ class ApprovalOut(BaseModel):
     payment_reference: str | None
     released_at: datetime | None
     created_at: datetime
+    # How a vendor payout is split over its bills and their service lines.
+    allocations: list["PayoutAllocationOut"] = []
+
+
+class PayoutAllocationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    vendor_invoice_id: int
+    invoice_number: str
+    line_id: int | None
+    code: str | None  # the UPS code, None for a bill from before service lines
+    amount: float
+
+
+class VendorPayoutCreate(BaseModel):
+    """Pay a vendor for some of its bills. The amount is split equally across their service lines."""
+
+    vendor_id: int
+    vendor_invoice_ids: list[int] = Field(min_length=1)
+    amount: PositiveMoney
+    purpose: OptionalText = None
+    bank_details: OptionalText = None
+
+
+class PayableLineOut(BaseModel):
+    line_id: int | None
+    code: str | None
+    service_title: str | None
+    payable: float
+    committed: float
+    paid: float
+    due: float
+
+
+class VendorPayableOut(BaseModel):
+    """A vendor bill and what is still owed on it, overall and per service line."""
+
+    invoice_id: int
+    invoice_number: str
+    invoice_date: date
+    project_id: int | None
+    status: str
+    amount_payable: float  # net payable less commission
+    committed: float  # on payouts raised and not rejected
+    paid: float  # on payouts released
+    due: float  # amount_payable - committed
+    lines: list[PayableLineOut]
 
 
 class ApprovalDetail(ApprovalOut):
@@ -142,6 +190,8 @@ class PaymentReceiptOut(BaseModel):
     id: int
     invoice_id: int
     invoice_number: str
+    # The proforma the tax invoice was issued from (None for invoices raised before proformas).
+    proforma_number: str | None = None
     client_id: int
     amount: float
     payment_date: date

@@ -1,7 +1,7 @@
 """Work order: the document that tells a vendor what to deliver, by when, and for how much.
 
-A vendor's invoice is checked against it, so it carries the number the
-invoice must quote.
+A vendor's invoice is checked against it, so it carries the work order number
+and the service codes the invoice must quote.
 """
 
 import io
@@ -36,7 +36,6 @@ def work_order_terms(project: Project, pv: ProjectVendor) -> list[tuple[str, str
     return [
         ("Project", f"{project.code} - {project.title}"),
         ("Brand", project.brand or "-"),
-        ("Share of the work", f"{pv.work_percent:g}%"),
         ("Agreed cost", f"{_money(pv.agreed_cost)} plus GST as applicable"),
         ("Start date", _date(project.start_date)),
         ("End date", _date(project.end_date)),
@@ -44,10 +43,16 @@ def work_order_terms(project: Project, pv: ProjectVendor) -> list[tuple[str, str
     ]
 
 
+def work_order_services(pv: ProjectVendor) -> list[tuple[str, str, str, str]]:
+    """(code, service, SAC, agreed cost) for each service the vendor delivers, in print order."""
+    return [(line.code, line.service.title, line.service.sac_code or "-", _money(line.agreed_cost)) for line in pv.services]
+
+
 def work_order_conditions(pv: ProjectVendor) -> list[str]:
     return [
-        f"Quote work order number {pv.work_order_number} on every invoice for this work. "
-        "Invoices without it, or above the agreed cost, will not be paid until corrected.",
+        f"Quote work order number {pv.work_order_number} and the service code for each item billed on every "
+        "invoice for this work. Invoices without them, or above the agreed cost of a service, will not be paid "
+        "until corrected.",
         "The total invoiced for this work order must not exceed the agreed cost unless we agree a change in writing.",
         f"Tax will be deducted at source as the law requires (currently {CONTRACTOR_TDS_RATE:g}% for companies and "
         "firms under section 194C), and the certificate will be issued.",
@@ -91,6 +96,21 @@ def render_work_order_pdf(project: Project, pv: ProjectVendor) -> bytes:
         parties,
         Spacer(1, 6 * mm),
         terms,
+    ]
+    rows = work_order_services(pv)
+    if rows:
+        services = Table(
+            [[para(h, label) for h in ("Service code", "Service", "SAC", "Agreed cost")]]
+            + [[para(c) for c in row] for row in rows],
+            colWidths=[42 * mm, None, 20 * mm, 32 * mm],
+        )
+        services.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.25, "#dddddd"),
+            ("ALIGN", (3, 0), (3, -1), "RIGHT"),
+        ]))
+        story += [para("Services", heading), services]
+    story += [
         para("Scope of work", heading),
         para(project.description or "As discussed and agreed for this project."),
         para("Conditions", heading),

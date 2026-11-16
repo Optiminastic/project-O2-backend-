@@ -15,13 +15,30 @@ def _normalize_code(value: object) -> object:
 
 ProjectCode = Annotated[str, BeforeValidator(_normalize_code), StringConstraints(pattern=CODE_PATTERN)]
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
-Percent = Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)]
 
 
-class ProjectVendorIn(BaseModel):
-    vendor_id: int
-    work_percent: Percent
+class AssignedServiceIn(BaseModel):
+    """One service a vendor delivers on the project, at an agreed cost before GST."""
+
+    service_id: int
     agreed_cost: Money
+
+
+class ProjectVendorServicesIn(BaseModel):
+    """The services a vendor delivers on a project. Sending it replaces the vendor's list."""
+
+    services: list[AssignedServiceIn] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _each_service_once(self):
+        ids = [s.service_id for s in self.services]
+        if len(ids) != len(set(ids)):
+            raise ValueError("A service is listed twice for this vendor.")
+        return self
+
+
+class ProjectVendorIn(ProjectVendorServicesIn):
+    vendor_id: int
 
 
 def _service_ids(service_ids: list[int] | None, service_id: int | None) -> list[int] | None:
@@ -85,14 +102,27 @@ class ProjectUpdate(BaseModel):
         return self
 
 
+class AssignedServiceOut(BaseModel):
+    """A vendor's service on a project, under its permanent code."""
+
+    id: int
+    code: str
+    service_id: int
+    service_title: str
+    sac_code: str | None
+    agreed_cost: float
+    invoiced: float  # charged against this code on vendor bills, before GST
+    over_invoiced: bool
+
+
 class ProjectVendorOut(BaseModel):
     id: int
     vendor_id: int
     vendor_name: str
     vendor_email: str
     is_group_company: bool = False
-    work_percent: float
-    agreed_cost: float
+    services: list[AssignedServiceOut]
+    agreed_cost: float  # the services' agreed costs together
     invoiced: float  # vendor invoices recorded against this project, before GST
     over_invoiced: bool
     work_order_number: str | None
@@ -154,7 +184,6 @@ class ProjectOut(BaseModel):
     expected_report_date: date | None
     status: AllocationStatus
     vendors: list[ProjectVendorOut]
-    work_percent_assigned: float
     committed_cost: float  # sum of the vendors' agreed costs
     invoiced_cost: float
     remaining_budget: float
@@ -165,7 +194,20 @@ class ProjectOut(BaseModel):
     left_to_bill: float | None  # None when no contract value is set
     over_contract: bool
     margin: float  # billed minus what vendors have invoiced
+    # Per service the project bills: client billing against vendor cost.
+    service_margins: list["ServiceMarginOut"] = []
     created_at: datetime
+
+
+class ServiceMarginOut(BaseModel):
+    """One project service: what the client is billed for it and what vendors cost for it."""
+
+    service_id: int
+    service_title: str
+    billed: float  # client invoice lines for this service, before GST, cancelled excluded
+    vendor_committed: float  # agreed with vendors for this service
+    vendor_invoiced: float  # charged by vendors against this service's codes
+    margin: float  # billed - vendor_invoiced
 
 
 class ProjectDetail(ProjectOut):
@@ -177,3 +219,23 @@ class WorkOrderSent(BaseModel):
     work_order_number: str
     to_email: str
     emailed: bool
+
+
+class VendorAssignmentOut(BaseModel):
+    """A service a vendor is assigned on some project: what a vendor bill can charge against."""
+
+    id: int
+    code: str
+    project_id: int
+    project_code: str
+    project_title: str
+    service_id: int
+    service_title: str
+    sac_code: str | None
+    agreed_cost: float
+    invoiced: float
+    remaining: float  # agreed_cost - invoiced (negative when over-billed)
+    # "Not invoiced", "Partly invoiced", "Fully invoiced" or "Over-invoiced".
+    invoice_status: str
+    # Released to the vendor against this code's bill lines (after commission).
+    paid: float = 0.0

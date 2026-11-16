@@ -15,7 +15,7 @@ from app.schemas.service import (
 )
 from app.services import bulk_services as bulk
 from app.services.audit import log_action
-from app.services.service_catalog import assert_title_free
+from app.services.service_catalog import assert_sac_free, assert_title_free
 from app.services.spreadsheet import MAX_FILE_BYTES
 
 router = APIRouter(prefix="/services", tags=["services"])
@@ -44,6 +44,7 @@ def list_services(
 @router.post("", response_model=ServiceOut, status_code=201)
 def create_service(payload: ServiceCreate, db: Session = Depends(get_db), user: User = Depends(require_roles(*NON_EXEC))):
     assert_title_free(db, payload.title)
+    assert_sac_free(db, payload.sac_code)
     service = Service(**payload.model_dump())
     db.add(service)
     db.flush()
@@ -118,6 +119,10 @@ def update_service(
     changes = payload.model_dump(exclude_unset=True)
     if changes.get("title"):
         assert_title_free(db, changes["title"], exclude_id=service.id)
+    # Only a change of SAC is checked, so services that already shared a code
+    # before codes had to be unique can still be renamed or deactivated.
+    if changes.get("sac_code") and changes["sac_code"] != service.sac_code:
+        assert_sac_free(db, changes["sac_code"], exclude_id=service.id)
     for field, value in changes.items():
         setattr(service, field, value)
     # Existing invoices keep the details they were raised with.

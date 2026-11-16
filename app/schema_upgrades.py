@@ -274,6 +274,142 @@ VENDOR_MSME = (
 )
 
 
+# Matches alembic revision c8e2a6f4d1b7 (vendors assigned to projects per service).
+# Each vendor already on a project becomes one assigned service: the project's first
+# service at the vendor's full agreed cost, coded <project code>-V<nn>-S01. Old bills
+# for that vendor on that project are charged against it.
+PROJECT_VENDOR_SERVICES = (
+    """
+    CREATE TABLE IF NOT EXISTS vendor_services (
+        vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+        service_id INTEGER NOT NULL REFERENCES services(id),
+        PRIMARY KEY (vendor_id, service_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vendor_services_service_id ON vendor_services (service_id)",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS last_vendor_seq INTEGER NOT NULL DEFAULT 0",
+    """
+    ALTER TABLE project_vendors
+        ADD COLUMN IF NOT EXISTS vendor_seq INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS last_service_seq INTEGER NOT NULL DEFAULT 0
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_vendor_services (
+        id SERIAL PRIMARY KEY,
+        project_vendor_id INTEGER NOT NULL REFERENCES project_vendors(id) ON DELETE CASCADE,
+        service_id INTEGER NOT NULL REFERENCES services(id),
+        code VARCHAR(60) NOT NULL UNIQUE,
+        agreed_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT uq_project_vendor_services_service UNIQUE (project_vendor_id, service_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_project_vendor_services_project_vendor_id ON project_vendor_services (project_vendor_id)",
+    "CREATE INDEX IF NOT EXISTS ix_project_vendor_services_service_id ON project_vendor_services (service_id)",
+    """
+    CREATE TABLE IF NOT EXISTS vendor_invoice_lines (
+        id SERIAL PRIMARY KEY,
+        vendor_invoice_id INTEGER NOT NULL REFERENCES vendor_invoices(id) ON DELETE CASCADE,
+        assignment_id INTEGER NOT NULL REFERENCES project_vendor_services(id),
+        amount DOUBLE PRECISION NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vendor_invoice_lines_vendor_invoice_id ON vendor_invoice_lines (vendor_invoice_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vendor_invoice_lines_assignment_id ON vendor_invoice_lines (assignment_id)",
+    # Number the vendors already on each project V01, V02... in the order they were added.
+    """
+    UPDATE project_vendors pv SET vendor_seq = n.seq
+    FROM (
+        SELECT id, (SELECT COALESCE(MAX(vendor_seq), 0) FROM project_vendors x WHERE x.project_id = p.project_id)
+                   + row_number() OVER (PARTITION BY project_id ORDER BY id) AS seq
+        FROM project_vendors p WHERE vendor_seq = 0
+    ) n
+    WHERE pv.id = n.id
+    """,
+    """
+    UPDATE projects p SET last_vendor_seq = s.top
+    FROM (SELECT project_id, MAX(vendor_seq) AS top FROM project_vendors GROUP BY project_id) s
+    WHERE s.project_id = p.id AND p.last_vendor_seq < s.top
+    """,
+    # One assigned service per existing vendor on a project with a service.
+    """
+    INSERT INTO project_vendor_services (project_vendor_id, service_id, code, agreed_cost, created_at, updated_at)
+    SELECT pv.id, p.service_id, p.code || '-V' || lpad(pv.vendor_seq::text, 2, '0') || '-S01', pv.agreed_cost,
+           now(), now()
+    FROM project_vendors pv JOIN projects p ON p.id = pv.project_id
+    WHERE p.service_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM project_vendor_services s WHERE s.project_vendor_id = pv.id)
+    """,
+    """
+    UPDATE project_vendors pv SET last_service_seq = 1
+    WHERE pv.last_service_seq = 0 AND EXISTS (SELECT 1 FROM project_vendor_services s WHERE s.project_vendor_id = pv.id)
+    """,
+    # The vendor provides the services it is assigned.
+    """
+    INSERT INTO vendor_services (vendor_id, service_id)
+    SELECT DISTINCT pv.vendor_id, s.service_id
+    FROM project_vendor_services s JOIN project_vendors pv ON pv.id = s.project_vendor_id
+    ON CONFLICT DO NOTHING
+    """,
+    # An old bill on a project charges the vendor's service there, when it has exactly one.
+    """
+    INSERT INTO vendor_invoice_lines (vendor_invoice_id, assignment_id, amount)
+    SELECT vi.id, MIN(s.id), vi.invoice_amount
+    FROM vendor_invoices vi
+    JOIN project_vendors pv ON pv.project_id = vi.project_id AND pv.vendor_id = vi.vendor_id
+    JOIN project_vendor_services s ON s.project_vendor_id = pv.id
+    WHERE NOT EXISTS (SELECT 1 FROM vendor_invoice_lines l WHERE l.vendor_invoice_id = vi.id)
+    GROUP BY vi.id, vi.invoice_amount
+    HAVING COUNT(s.id) = 1
+    """,
+)
+
+
+# Matches alembic revision d9f3b7a2e5c1 (Optiminastic commission, vendor invoice
+# documents, vendor payouts split over bills and their service lines).
+VENDOR_PAYOUTS = (
+    "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS commission_rate DOUBLE PRECISION NOT NULL DEFAULT 0",
+    """
+    ALTER TABLE vendor_invoices
+        ADD COLUMN IF NOT EXISTS commission_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS commission_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS amount_payable DOUBLE PRECISION NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS document_path VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS document_name VARCHAR(200)
+    """,
+    # Bills from before commissions: the vendor is paid the whole net payable.
+    "UPDATE vendor_invoices SET amount_payable = net_payable - commission_amount WHERE amount_payable = 0 AND net_payable > 0",
+    "ALTER TABLE payment_approvals ADD COLUMN IF NOT EXISTS vendor_id INTEGER REFERENCES vendors(id)",
+    "CREATE INDEX IF NOT EXISTS ix_payment_approvals_vendor_id ON payment_approvals (vendor_id)",
+    """
+    CREATE TABLE IF NOT EXISTS payout_allocations (
+        id SERIAL PRIMARY KEY,
+        approval_id INTEGER NOT NULL REFERENCES payment_approvals(id) ON DELETE CASCADE,
+        vendor_invoice_id INTEGER NOT NULL REFERENCES vendor_invoices(id),
+        line_id INTEGER REFERENCES vendor_invoice_lines(id),
+        amount DOUBLE PRECISION NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_payout_allocations_approval_id ON payout_allocations (approval_id)",
+    "CREATE INDEX IF NOT EXISTS ix_payout_allocations_vendor_invoice_id ON payout_allocations (vendor_invoice_id)",
+    "CREATE INDEX IF NOT EXISTS ix_payout_allocations_line_id ON payout_allocations (line_id)",
+    # A payout raised against one bill before allocations settles that bill.
+    """
+    INSERT INTO payout_allocations (approval_id, vendor_invoice_id, line_id, amount)
+    SELECT a.id, a.vendor_invoice_id, NULL, a.net_payable
+    FROM payment_approvals a
+    WHERE a.vendor_invoice_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM payout_allocations x WHERE x.approval_id = a.id)
+    """,
+    """
+    UPDATE payment_approvals a SET vendor_id = vi.vendor_id
+    FROM vendor_invoices vi
+    WHERE a.vendor_invoice_id = vi.id AND a.vendor_id IS NULL
+    """,
+)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -291,7 +427,7 @@ def apply(engine: Engine) -> None:
         engine,
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
         + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
-        + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME,
+        + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME + PROJECT_VENDOR_SERVICES + VENDOR_PAYOUTS,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

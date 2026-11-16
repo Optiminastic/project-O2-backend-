@@ -6,7 +6,7 @@ from app.core.deps import get_current_user, require_roles
 from app.core.period import Period, month_period
 from app.core.rbac import NON_EXEC
 from app.database import get_db
-from app.models import Client, ClientInvoice, Project, ProjectVendor, User, Vendor, VendorInvoice
+from app.models import Client, ClientInvoice, Project, ProjectVendor, ProjectVendorService, User, Vendor, VendorInvoice
 from app.models.mixins import utcnow
 from app.schemas.project import (
     ProjectClientInvoiceOut,
@@ -14,7 +14,9 @@ from app.schemas.project import (
     ProjectDetail,
     ProjectOut,
     ProjectUpdate,
+    ProjectVendorIn,
     ProjectVendorInvoiceOut,
+    ProjectVendorServicesIn,
     WorkOrderSent,
 )
 from app.services import projects as rules
@@ -36,6 +38,7 @@ def _load(db: Session, project_id: int) -> Project:
         db.query(Project)
         .options(
             selectinload(Project.vendors).selectinload(ProjectVendor.vendor),
+            selectinload(Project.vendors).selectinload(ProjectVendor.services).selectinload(ProjectVendorService.service),
             selectinload(Project.client),
             selectinload(Project.services),
         )
@@ -56,15 +59,25 @@ def _masked(view: ProjectOut, user: User) -> ProjectOut:
     return view
 
 
-def _guard_group_vendors(db: Session, project: Project | None, incoming: list, user: User) -> None:
-    """Only the CFO and CEO add, change or remove a group company on a project."""
+def _terms(services) -> tuple:
+    """A vendor's assignment, comparable whether it came from the database or a request."""
+    return tuple(sorted((s.service_id, s.agreed_cost) for s in services))
+
+
+def _guard_group_vendors(
+    db: Session, project: Project | None, incoming: list[ProjectVendorIn], user: User, only: int | None = None
+) -> None:
+    """Only the CFO and CEO add, change or remove a group company on a project.
+
+    ``only`` limits the check to one vendor, for a change to just that vendor.
+    """
     if sees_group_companies(user):
         return
-    before = {pv.vendor_id: (pv.work_percent, pv.agreed_cost) for pv in (project.vendors if project else [])
-              if pv.vendor.is_group_company}
+    before = {pv.vendor_id: _terms(pv.services) for pv in (project.vendors if project else [])
+              if pv.vendor.is_group_company and (only is None or pv.vendor_id == only)}
     ids = [v.vendor_id for v in incoming]
     group_ids = {v.id for v in db.query(Vendor).filter(Vendor.id.in_(ids), Vendor.is_group_company.is_(True))} if ids else set()
-    after = {v.vendor_id: (v.work_percent, v.agreed_cost) for v in incoming if v.vendor_id in group_ids}
+    after = {v.vendor_id: _terms(v.services) for v in incoming if v.vendor_id in group_ids}
     if after != before:
         assert_may_manage(user, True)
 
@@ -117,6 +130,7 @@ def list_projects(
 ):
     q = db.query(Project).options(
         selectinload(Project.vendors).selectinload(ProjectVendor.vendor),
+        selectinload(Project.vendors).selectinload(ProjectVendor.services).selectinload(ProjectVendorService.service),
         selectinload(Project.client),
         selectinload(Project.services),
     )
@@ -187,6 +201,8 @@ def update_project(
         new_ids = [sid for sid in payload.service_ids if sid not in kept]
         added = usable_services(db, new_ids) if new_ids else []
         by_id = {s.id: s for s in [*project.services, *added]}
+        if payload.vendors is None:
+            rules.assert_services_not_assigned(project, payload.service_ids)
         rules.set_services(project, [by_id[sid] for sid in dict.fromkeys(payload.service_ids)])
     if "code" in changes:
         rules.assert_code_free(db, changes["code"], exclude_id=project.id)
@@ -220,6 +236,57 @@ def delete_project(
     db.delete(project)
     db.commit()
     return Response(status_code=204)
+
+
+# ---------- Vendors and the services they deliver ----------
+
+def _vendor(db: Session, vendor_id: int) -> Vendor:
+    vendor = db.get(Vendor, vendor_id)
+    if not vendor:
+        raise HTTPException(404, "Vendor not found")
+    return vendor
+
+
+@router.put("/{project_id}/vendors/{vendor_id}", response_model=ProjectDetail)
+def assign_vendor(
+    project_id: int,
+    vendor_id: int,
+    payload: ProjectVendorServicesIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*EDIT_ROLES)),
+):
+    """Put a vendor on the project for these services, or change the services of one already on it.
+
+    Each newly assigned service gets its permanent code; a kept one keeps its code.
+    """
+    project = _load(db, project_id)
+    vendor = _vendor(db, vendor_id)
+    incoming = ProjectVendorIn(vendor_id=vendor_id, services=payload.services)
+    _guard_group_vendors(db, project, [incoming], user, only=vendor_id)
+    is_new = all(pv.vendor_id != vendor_id for pv in project.vendors)
+    pv = rules.assign_vendor(db, project, vendor, payload.services)
+    db.flush()
+    codes = ", ".join(line.code for line in pv.services)
+    log_action(db, user, "Assigned vendor to project" if is_new else "Changed vendor's services on project",
+               "Project", project.id, f"{vendor.business_name}: {codes}")
+    db.commit()
+    return _detail(db, _load(db, project.id), user)
+
+
+@router.delete("/{project_id}/vendors/{vendor_id}", response_model=ProjectDetail)
+def remove_vendor(
+    project_id: int,
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*EDIT_ROLES)),
+):
+    project = _load(db, project_id)
+    pv = rules.project_vendor(project, vendor_id)
+    assert_may_manage(user, pv.vendor.is_group_company)
+    rules.remove_vendor(db, project, pv)
+    log_action(db, user, "Removed vendor from project", "Project", project.id, pv.vendor.business_name)
+    db.commit()
+    return _detail(db, _load(db, project.id), user)
 
 
 # ---------- Work orders ----------

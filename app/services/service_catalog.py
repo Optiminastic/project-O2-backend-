@@ -15,6 +15,25 @@ def assert_title_free(db: Session, title: str, exclude_id: int | None = None) ->
         raise HTTPException(status.HTTP_409_CONFLICT, f"A service called '{title}' already exists")
 
 
+def sac_taken_by(db: Session, sac_code: str | None, exclude_id: int | None = None) -> Service | None:
+    """The other service that already carries this SAC code, if any."""
+    if not sac_code:
+        return None
+    q = db.query(Service).filter(Service.sac_code == sac_code)
+    if exclude_id is not None:
+        q = q.filter(Service.id != exclude_id)
+    return q.first()
+
+
+def assert_sac_free(db: Session, sac_code: str | None, exclude_id: int | None = None) -> None:
+    """Each SAC code belongs to one service in the catalogue."""
+    other = sac_taken_by(db, sac_code, exclude_id)
+    if other:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"SAC {sac_code} is already used by '{other.title}'. Each service needs its own SAC code."
+        )
+
+
 def usable_service(db: Session, service_id: int) -> Service:
     """A service that may be put on an invoice: it must exist and be active."""
     service = db.get(Service, service_id)

@@ -49,6 +49,33 @@ def test_service_needs_a_title_and_a_valid_gst_rate(client, users):
     assert add_service(client, users["manager"], title="Short code", sac_code="9983").status_code == 201
 
 
+def test_each_sac_code_belongs_to_one_service(client, users):
+    # 998311 is the seeded default service's code.
+    taken = add_service(client, users["manager"], sac_code="998311")
+    assert taken.status_code == 409
+    assert "already used by" in taken.json()["detail"]
+
+    mine = add_service(client, users["manager"]).json()
+    url = f"/api/services/{mine['id']}"
+    headers = auth_header(users["manager"])
+    assert client.patch(url, json={"sac_code": "998311"}, headers=headers).status_code == 409
+    # Saving a service with its own code, or with no code, is fine.
+    assert client.patch(url, json={"title": "Audit", "sac_code": "998221"}, headers=headers).status_code == 200
+    assert add_service(client, users["manager"], title="No code yet", sac_code=None).status_code == 201
+    assert add_service(client, users["manager"], title="Also no code", sac_code=None).status_code == 201
+
+
+def test_services_that_already_share_a_sac_can_still_be_edited(client, users, db):
+    from app.models import Service
+
+    db.add(Service(title="Legacy twin", sac_code="998311", gst_rate=18))
+    db.commit()
+    twin = db.query(Service).filter(Service.title == "Legacy twin").one()
+    res = client.patch(f"/api/services/{twin.id}", json={"title": "Legacy twin (renamed)", "is_active": False},
+                       headers=auth_header(users["manager"]))
+    assert res.status_code == 200, res.text
+
+
 def test_service_titles_are_unique(client, users):
     assert add_service(client, users["manager"]).status_code == 201
     assert add_service(client, users["manager"], title="statutory AUDIT").status_code == 409

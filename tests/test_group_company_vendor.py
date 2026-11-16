@@ -2,12 +2,17 @@
 
 from app.models import PaymentApproval, Vendor, VendorInvoice
 from app.services.numbering import business_date
-from tests.conftest import auth_header, project_id_for, vendor_body
+from tests.conftest import auth_header, default_service_id, project_id_for, vendor_body
 
 
 def vendor(client, user, **overrides):
-    body = vendor_body(**{"business_name": "Optiminastic Labs", "email": "accounts@labs.example", **overrides})
+    body = vendor_body(**{"business_name": "Optiminastic Labs", "email": "accounts@labs.example",
+                          "service_ids": [default_service_id()], **overrides})
     return client.post("/api/vendors", json=body, headers=auth_header(user))
+
+
+def share(vendor_id, cost):
+    return {"vendor_id": vendor_id, "services": [{"service_id": default_service_id(), "agreed_cost": cost}]}
 
 
 def group_vendor(client, users):
@@ -62,7 +67,7 @@ def test_on_a_project_a_group_company_shows_its_cost_but_not_its_name(client, db
     gv = group_vendor(client, users)
     pid = project_id_for(client_row)
     res = client.patch(
-        f"/api/projects/{pid}", json={"vendors": [{"vendor_id": gv["id"], "work_percent": 50, "agreed_cost": 4000}]},
+        f"/api/projects/{pid}", json={"vendors": [share(gv["id"], 4000)]},
         headers=auth_header(users["cfo"]),
     )
     assert res.status_code == 200, res.text
@@ -77,14 +82,19 @@ def test_a_manager_keeps_but_cannot_change_a_group_company_row(client, users, cl
     gv = group_vendor(client, users)
     other = vendor(client, users["manager"], business_name="Print House", email="a@print.example").json()
     pid = project_id_for(client_row)
-    group_row = {"vendor_id": gv["id"], "work_percent": 50, "agreed_cost": 4000}
+    group_row = share(gv["id"], 4000)
     client.patch(f"/api/projects/{pid}", json={"vendors": [group_row]}, headers=auth_header(users["cfo"]))
     url, manager = f"/api/projects/{pid}", auth_header(users["manager"])
-    keeps = client.patch(url, json={"vendors": [group_row, {"vendor_id": other["id"], "work_percent": 50, "agreed_cost": 1000}]}, headers=manager)
+    keeps = client.patch(url, json={"vendors": [group_row, share(other["id"], 1000)]}, headers=manager)
     assert keeps.status_code == 200, keeps.text
-    assert client.patch(url, json={"vendors": [{**group_row, "agreed_cost": 9000}]}, headers=manager).status_code == 403
+    assert client.patch(url, json={"vendors": [share(gv["id"], 9000)]}, headers=manager).status_code == 403
     assert client.patch(url, json={"vendors": []}, headers=manager).status_code == 403
     assert client.get(f"{url}/vendors/{gv['id']}/work-order.pdf", headers=manager).status_code == 403
+    # The per-vendor endpoints are guarded the same way.
+    one = {"services": [{"service_id": default_service_id(), "agreed_cost": 9000}]}
+    assert client.put(f"{url}/vendors/{gv['id']}", json=one, headers=manager).status_code == 403
+    assert client.delete(f"{url}/vendors/{gv['id']}", headers=manager).status_code == 403
+    assert client.put(f"{url}/vendors/{other['id']}", json=one, headers=manager).status_code == 200
 
 
 def test_vendor_keeps_its_default_tds_section(client, users):
