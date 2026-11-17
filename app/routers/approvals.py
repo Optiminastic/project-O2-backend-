@@ -59,12 +59,14 @@ def create_vendor_payout(
 ):
     """An outward payment to a vendor for some of its bills.
 
-    It cannot be more than those bills still owe, and is split equally across
-    their service lines (UPS codes). It then goes for sign-off like any payout.
+    It cannot be more than those bills still owe. It is divided equally across their
+    service lines (UPS codes), or paid oldest bill first, as ``split`` says. It then
+    goes for sign-off like any payout.
     """
     vendor = assert_visible(db.get(Vendor, payload.vendor_id), user)
     approval = vendor_payouts.create_vendor_payout(
         db, user, vendor, payload.vendor_invoice_ids, payload.amount, payload.purpose, payload.bank_details,
+        split=payload.split,
     )
     db.flush()
     log_action(db, user, "Created vendor payout request", "PaymentApproval", approval.id,

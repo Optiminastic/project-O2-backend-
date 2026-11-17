@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
@@ -143,11 +144,16 @@ class PayoutAllocationOut(BaseModel):
 
 
 class VendorPayoutCreate(BaseModel):
-    """Pay a vendor for some of its bills. The amount is split equally across their service lines."""
+    """Pay a vendor for some of its bills.
+
+    ``split`` decides how the amount is shared: ``services`` divides it equally across
+    every service line (UPS code) on the bills; ``oldest`` pays the oldest bill first.
+    """
 
     vendor_id: int
     vendor_invoice_ids: list[int] = Field(min_length=1)
     amount: PositiveMoney
+    split: Literal["services", "oldest"] = "services"
     purpose: OptionalText = None
     bank_details: OptionalText = None
 

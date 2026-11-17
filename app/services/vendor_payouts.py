@@ -155,11 +155,30 @@ def split_equally(amount: float, dues: list[tuple[object, float]]) -> dict[objec
     return {key: _rupees(p) for key, p in given.items() if p > 0}
 
 
+def split_oldest_first(amount: float, bills: list[BillDue]) -> dict[tuple[int, int | None], float]:
+    """Pay the oldest bill first (by bill date, then id), each line in turn, until ``amount`` runs out."""
+    remaining = _paise(amount)
+    given: dict[tuple[int, int | None], float] = {}
+    for bill in sorted(bills, key=lambda b: (b.invoice.invoice_date, b.invoice.id)):
+        for line in bill.lines:
+            if remaining <= 0:
+                return given
+            take = min(remaining, max(_paise(line.due), 0))
+            if take > 0:
+                given[(line.invoice_id, line.line_id)] = _rupees(take)
+                remaining -= take
+    return given
+
+
 def create_vendor_payout(
     db: Session, user: User, vendor: Vendor, invoice_ids: list[int], amount: float,
-    purpose: str | None, bank_details: str | None,
+    purpose: str | None, bank_details: str | None, split: str = "services",
 ) -> PaymentApproval:
-    """A payout to ``vendor`` of ``amount`` over the given bills, split equally across their service lines."""
+    """A payout to ``vendor`` of ``amount`` over the given bills.
+
+    ``split="services"`` divides it equally across their service lines; ``"oldest"`` pays
+    the oldest bill first.
+    """
     if len(invoice_ids) != len(set(invoice_ids)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A bill is selected twice.")
     invoices = db.query(VendorInvoice).filter(VendorInvoice.id.in_(invoice_ids)).all()
@@ -177,7 +196,10 @@ def create_vendor_payout(
             status.HTTP_400_BAD_REQUEST,
             f"The payment of ₹{amount:,.2f} is more than the ₹{total_due:,.2f} still due on the selected bills.",
         )
-    shares = split_equally(amount, [((line.invoice_id, line.line_id), line.due) for b in dues for line in b.lines])
+    if split == "oldest":
+        shares = split_oldest_first(amount, dues)
+    else:
+        shares = split_equally(amount, [((line.invoice_id, line.line_id), line.due) for b in dues for line in b.lines])
 
     numbers = ", ".join(i.invoice_number for i in invoices)
     approval = PaymentApproval(
