@@ -38,9 +38,11 @@ def bill(client, user, vendor_id, lines, number="B-1", **fields):
     return client.post("/api/vendors/invoices", json=body, headers=auth_header(user))
 
 
-def payout(client, user, vendor_id, invoice_ids, amount):
-    return client.post("/api/approvals/vendor-payout", headers=auth_header(user),
-                       json={"vendor_id": vendor_id, "vendor_invoice_ids": invoice_ids, "amount": amount})
+def payout(client, user, vendor_id, invoice_ids, amount, split=None):
+    body = {"vendor_id": vendor_id, "vendor_invoice_ids": invoice_ids, "amount": amount}
+    if split:
+        body["split"] = split
+    return client.post("/api/approvals/vendor-payout", headers=auth_header(user), json=body)
 
 
 # ---------- commission ----------
@@ -188,3 +190,37 @@ def test_vendor_invoice_document_upload_and_download(client, users, vendor):
     assert res.json()["document_name"] == "B-1.pdf"
     got = client.get(url, headers=h)
     assert got.status_code == 200 and got.content == b"%PDF-1.4 demo"
+
+
+# ---------- supplier details on the bill ----------
+
+def test_bill_keeps_the_supplier_details_as_printed(client, users, vendor):
+    b = bill(client, users["exec"], vendor.id, [(assignment_for(vendor.id), 1000)],
+             supplier_gstin="27aagfq1234c1zo", supplier_name="Quanta Research LLP",
+             supplier_address="12 MG Road, Bengaluru 560001", supplier_coi="AAB-1234").json()
+    assert (b["vendor_gstin"], b["supplier_name"], b["supplier_address"], b["supplier_coi"]) == (
+        "27AAGFQ1234C1ZO", "Quanta Research LLP", "12 MG Road, Bengaluru 560001", "AAB-1234",
+    )
+
+
+def test_bill_supplier_details_default_to_the_vendor(client, users, vendor):
+    b = bill(client, users["exec"], vendor.id, [(assignment_for(vendor.id), 1000)]).json()
+    assert (b["vendor_gstin"], b["supplier_name"]) == ("29AAGFQ1234C1Z5", "Quanta Research")
+
+
+def test_bill_rejects_a_bad_supplier_gstin(client, users, vendor):
+    res = bill(client, users["exec"], vendor.id, [(assignment_for(vendor.id), 1000)], supplier_gstin="29AAGFQ1234C1ZX")
+    assert res.status_code == 422
+
+
+def test_payment_can_pay_the_oldest_bill_first(client, users, vendor, db):
+    first, second = assignment_for(vendor.id), second_code(db, vendor.id)
+    newer = bill(client, users["exec"], vendor.id, [(first, 10000)], number="NEW-1", commission_rate=0).json()  # 11,600 due
+    older = bill(client, users["exec"], vendor.id, [(first, 1000), (second, 1000)], number="OLD-1",
+                 invoice_date="2026-11-01", commission_rate=0).json()  # 2,320 due, 1,160 per line
+    res = payout(client, users["manager"], vendor.id, [newer["id"], older["id"]], 3000, split="oldest")
+    assert res.status_code == 201, res.text
+    split = sorted((a["invoice_number"], a["amount"]) for a in res.json()["allocations"])
+    # The older bill is paid in full (both lines), the rest goes to the newer one.
+    assert split == [("NEW-1", 680), ("OLD-1", 1160), ("OLD-1", 1160)]
+    assert payout(client, users["manager"], vendor.id, [newer["id"]], 1, split="random").status_code == 422

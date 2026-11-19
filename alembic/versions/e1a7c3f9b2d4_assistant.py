@@ -1,7 +1,7 @@
 """Ask O2 assistant tables.
 
 Revision ID: e1a7c3f9b2d4
-Revises: d9f3b7a2e5c1
+Revises: e1a4c7b9d2f6
 """
 
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e1a7c3f9b2d4"
-down_revision: Union[str, None] = "d9f3b7a2e5c1"
+down_revision: Union[str, None] = "e1a4c7b9d2f6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

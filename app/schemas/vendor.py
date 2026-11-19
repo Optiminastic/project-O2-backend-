@@ -227,6 +227,11 @@ class VendorInvoiceCreate(BaseModel):
     tds_section: TdsSectionKey = DEFAULT_VENDOR_TDS_SECTION
     # Optiminastic's commission (%) on this bill; left out, the vendor's usual rate.
     commission_rate: Percent | None = None
+    # The supplier as printed on the bill. Left out, the vendor's own details are used.
+    supplier_gstin: OptionalGstin = None
+    supplier_name: OptionalName = None
+    supplier_address: OptionalText = None
+    supplier_coi: OptionalCin = None
 
 
 class VendorInvoiceLineOut(BaseModel):
@@ -267,6 +272,9 @@ class VendorInvoiceOut(BaseModel):
     # What the vendor is paid: net payable less Optiminastic's commission.
     amount_payable: float = 0.0
     document_name: str | None = None
+    supplier_name: str | None = None
+    supplier_address: str | None = None
+    supplier_coi: str | None = None
     report_submitted: bool
     status: InvoiceStatus
     # Empty only on bills recorded before vendors were assigned per service.

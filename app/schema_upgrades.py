@@ -410,6 +410,17 @@ VENDOR_PAYOUTS = (
 )
 
 
+# Matches alembic revision e1a4c7b9d2f6 (supplier details as printed on a vendor bill).
+VENDOR_INVOICE_SUPPLIER = (
+    """
+    ALTER TABLE vendor_invoices
+        ADD COLUMN IF NOT EXISTS supplier_name VARCHAR(200),
+        ADD COLUMN IF NOT EXISTS supplier_address TEXT,
+        ADD COLUMN IF NOT EXISTS supplier_coi VARCHAR(120)
+    """,
+)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -432,7 +443,8 @@ def apply(engine: Engine) -> None:
         engine,
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
         + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
-        + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME + PROJECT_VENDOR_SERVICES + VENDOR_PAYOUTS + ASSISTANT,
+        + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME + PROJECT_VENDOR_SERVICES + VENDOR_PAYOUTS
+        + VENDOR_INVOICE_SUPPLIER + ASSISTANT,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:
