@@ -91,6 +91,42 @@ Each project bills one or more services (`project_services`), and every new invo
 - Clients carry `msme` (yes/no) and an optional Udyam `msme_number`, kept only while `msme` is true.
 - Code: `app/services/service_catalog.py` (`project_invoice_fields`), `app/services/projects.py`, `app/routers/projects.py`, `app/routers/invoices.py`, `app/services/bulk_invoices.py`.
 
+## Ask O2 assistant
+
+- Code: `app/assistant/` (`llm.py` OpenRouter client, `tools.py` tool list, `describe.py` confirm cards, `executor.py`, `runner.py`, `views.py`) and `app/routers/assistant.py`.
+- Settings: `OPENROUTER_API_KEY` (blank turns the assistant off), `OPENROUTER_MODEL` (default `anthropic/claude-sonnet-4.5`), `OPENROUTER_URL`.
+  The key is never logged.
+- Endpoints, CEO and CFO only (403 for everyone else), under `/api/assistant`:
+  - `GET /status`
+  - `GET`, `POST /conversations`; `GET`, `DELETE /conversations/{id}`
+  - `POST /conversations/{id}/messages` with `{text, file_ids}`
+  - `POST /conversations/{id}/files` (PDF, image, CSV or XLSX, up to 10 MB)
+  - `POST /actions/{id}/confirm`, `POST /actions/{id}/cancel`
+- Reads run at once.
+  A write is saved as a pending action and runs only on confirm: once, for the user who asked, within 30 minutes.
+- A confirmed action calls O2's own API in process with the user's own token, so every permission check, validation rule and audit entry applies.
+- Adding a tool is one line in `TOOLS`.
+  Its input schema comes from the app's OpenAPI document.
+  Paths under `/auth`, `/public` and `/admin` are never tools.
+- Tables: `assistant_conversations`, `assistant_messages`, `assistant_actions`, `assistant_files` (Alembic `e1a7c3f9b2d4`).
+
+### Plugins and saved commands
+
+- Plugins are remote MCP servers (Streamable HTTP), for example Razorpay, Stripe, Zapier or any open-source server you host.
+  Code: `app/assistant/mcp_client.py` (the MCP client), `app/assistant/plugins.py` (directory, URL checks, the agent's view), `app/assistant/secrets.py`, `app/routers/assistant_plugins.py`.
+- The CEO adds, turns off and removes plugins; the CEO and CFO see and use them.
+- A plugin's URL and auth headers are stored encrypted with a key derived from `SECRET_KEY`, and never returned by the API.
+  Changing `SECRET_KEY` means plugins must be added again.
+- Plugin URLs must be https and resolve to public addresses (no localhost, private or cloud-metadata ranges); redirects are not followed.
+- Plugin tools appear to the model as `plugin<id>__<tool>`, up to 40 per plugin.
+  A tool the server marks `readOnlyHint` runs at once; anything else is a confirm card, like O2's own writes.
+- Endpoints under `/api/assistant`:
+  - `GET /plugins` (directory and connected plugins), `POST /plugins`, `POST /plugins/{id}/refresh`, `PATCH /plugins/{id}` with `{enabled}`, `DELETE /plugins/{id}`
+  - `GET`, `POST /commands`; `PUT`, `DELETE /commands/{id}`
+- Saved commands appear in the "/" menu under "Your commands" and drop their prompt into the message box.
+  Built-in names (`clients`, `gst`, ...) are reserved.
+- Tables: `assistant_plugins`, `assistant_commands` (Alembic `b7e4d1a9c3f6`).
+
 ## Schema changes
 
 Production does not run Alembic on deploy.
@@ -119,3 +155,17 @@ docker compose exec api python -m app.reset_password
 ```
 
 It lists the CEO accounts, asks for the email and the new password (typed twice, never shown), and reactivates the account.
+
+## Rate limits
+
+Set in `app/core/rate_limit.py`.
+- 5 wrong passwords for one email lock that email for 15 minutes, even with the right password.
+- 20 failed logins from one IP in 15 minutes block that IP's logins.
+- Signup and invite links: 20 requests per IP per 15 minutes.
+- The whole API: 300 requests per IP per minute.
+- A right password clears the email's count. A blocked call gets 429 with `Retry-After`.
+
+Counts are in memory, per worker, and reset on restart.
+The client IP is read from `X-Forwarded-For` behind the proxy: `TRUSTED_PROXY_HOPS=1` for Coolify's Traefik; raise it if Cloudflare sits in front.
+`RATE_LIMIT_ENABLED=false` turns the limits off (tests do this).
+A locked-out CEO can wait 15 minutes, or restart the API.

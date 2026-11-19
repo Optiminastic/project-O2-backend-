@@ -42,6 +42,12 @@ CONFIRM_PHRASE = "ERASE PROJECT O2"
 # agent_id), so this order is load-bearing: get it wrong and Postgres raises a
 # foreign-key violation mid-transaction.
 DELETE_ORDER: tuple[str, ...] = (
+    "assistant_commands",
+    "assistant_plugins",
+    "assistant_actions",
+    "assistant_files",
+    "assistant_messages",
+    "assistant_conversations",
     "bank_transactions",
     "approval_actions",
     "payout_allocations",

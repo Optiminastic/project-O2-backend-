@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     # Local demos only: return a canned GSTVerify-shaped response instead of calling the API.
     gst_api_mock: bool = False
 
+    # Ask O2 assistant (OpenRouter, OpenAI-compatible chat completions). Blank key: the assistant
+    # reports "not set up yet" and the rest of the app is unaffected. Never log the key.
+    openrouter_api_key: str = ""
+    openrouter_model: str = "anthropic/claude-sonnet-4.5"
+    openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
+
+    # Rate limits (app/core/rate_limit.py): wrong-password lockout and a per-IP request cap.
+    rate_limit_enabled: bool = True
+    # Proxies in front of the API that append to X-Forwarded-For (Coolify's Traefik: 1).
+    # Raise it if another proxy such as Cloudflare sits in front; 0 ignores the header.
+    trusted_proxy_hops: int = 1
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _normalize_db_scheme(cls, v: str) -> str:

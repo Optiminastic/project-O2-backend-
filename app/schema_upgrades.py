@@ -438,6 +438,11 @@ def _run(engine: Engine, statements: tuple[str, ...]) -> None:
                 logger.error("Schema upgrade failed: %s (%s)", stmt.strip().splitlines()[0], exc)
 
 
+# Matches alembic revision e1a7c3f9b2d4 (Ask O2 assistant). The tables come from create_all;
+# this keeps the pending-action lookup fast on databases created before the model had the index.
+ASSISTANT = ("CREATE INDEX IF NOT EXISTS ix_assistant_actions_status ON assistant_actions (status)",)
+
+
 def apply(engine: Engine) -> None:
     if engine.dialect.name != "postgresql":
         return
@@ -446,7 +451,7 @@ def apply(engine: Engine) -> None:
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
         + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
         + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME + PROJECT_VENDOR_SERVICES + VENDOR_PAYOUTS
-        + VENDOR_INVOICE_SUPPLIER + AGENT_EMAIL_AND_CLIENT_EMAILS,
+        + VENDOR_INVOICE_SUPPLIER + AGENT_EMAIL_AND_CLIENT_EMAILS + ASSISTANT,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:
