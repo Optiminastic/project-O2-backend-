@@ -155,3 +155,17 @@ docker compose exec api python -m app.reset_password
 ```
 
 It lists the CEO accounts, asks for the email and the new password (typed twice, never shown), and reactivates the account.
+
+## Rate limits
+
+Set in `app/core/rate_limit.py`.
+- 5 wrong passwords for one email lock that email for 15 minutes, even with the right password.
+- 20 failed logins from one IP in 15 minutes block that IP's logins.
+- Signup and invite links: 20 requests per IP per 15 minutes.
+- The whole API: 300 requests per IP per minute.
+- A right password clears the email's count. A blocked call gets 429 with `Retry-After`.
+
+Counts are in memory, per worker, and reset on restart.
+The client IP is read from `X-Forwarded-For` behind the proxy: `TRUSTED_PROXY_HOPS=1` for Coolify's Traefik; raise it if Cloudflare sits in front.
+`RATE_LIMIT_ENABLED=false` turns the limits off (tests do this).
+A locked-out CEO can wait 15 minutes, or restart the API.
