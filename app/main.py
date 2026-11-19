@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import settings
+from app.core.rate_limit import RateLimitMiddleware
 from app.database import Base, engine
 from app import schema_upgrades
 import app.models  # noqa: F401  (register models on Base)
@@ -62,6 +63,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Added before CORS so CORS wraps it and a 429 still carries the CORS headers.
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     # Allow the configured production origin (e.g. the Vercel URL), plus any

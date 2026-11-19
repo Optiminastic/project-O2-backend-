@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
+from app.core import rate_limit
 from app.database import get_db
 from app.core.security import verify_password, create_access_token, hash_password
 from app.core.deps import get_current_user
@@ -22,15 +23,23 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=Token)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """OAuth2 password login. `username` is the user's email."""
-    user = db.query(User).filter(User.email == form.username.lower()).first()
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """OAuth2 password login. `username` is the user's email.
+
+    After too many wrong passwords for an email or from one IP, logins are refused
+    with 429 for a while, even with the right password.
+    """
+    email = form.username.strip().lower()
+    rate_limit.check_login_allowed(request, email)
+    user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(form.password, user.hashed_password):
+        rate_limit.record_login_failure(request, email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    rate_limit.record_login_success(email)
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     token = create_access_token(subject=user.email, role=user.role.value, name=user.name)

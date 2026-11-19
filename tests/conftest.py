@@ -20,6 +20,7 @@ os.environ["COMPANY_LEGAL_NAME"] = "Test Supplier Pvt Ltd"
 os.environ["COMPANY_GSTIN"] = "27AAAAA0000A1Z5"
 os.environ["COMPANY_STATE"] = "Maharashtra"
 os.environ["SEED_SERVICE_CATALOGUE"] = "false"  # tests seed their own services
+os.environ["RATE_LIMIT_ENABLED"] = "false"  # tests/test_rate_limit.py turns it on for itself
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
