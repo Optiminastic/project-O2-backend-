@@ -156,3 +156,9 @@ def test_executives_get_a_names_only_agent_list_with_opti_first(client, users, d
     options = res.json()
     assert [o["business_name"] for o in options] == ["Opti", "Alpha"]
     assert set(options[0]) == {"id", "business_name", "is_house"}
+
+
+def test_an_agent_needs_no_email(client, users):
+    res = client.post("/api/agents", json={"business_name": "Referral Co", "commission_rate": 4}, headers=auth_header(users["manager"]))
+    assert res.status_code == 201, res.text
+    assert res.json()["email"] is None

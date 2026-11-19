@@ -421,6 +421,13 @@ VENDOR_INVOICE_SUPPLIER = (
 )
 
 
+# Matches alembic revision f7b2d5e8a3c4 (agent email optional, client's other emails).
+AGENT_EMAIL_AND_CLIENT_EMAILS = (
+    "ALTER TABLE agents ALTER COLUMN email DROP NOT NULL",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS other_emails TEXT",
+)
+
+
 def _run(engine: Engine, statements: tuple[str, ...]) -> None:
     # AUTOCOMMIT: ALTER TYPE ... ADD VALUE must not share a transaction with later statements.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -439,7 +446,7 @@ def apply(engine: Engine) -> None:
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
         + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
         + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME + PROJECT_VENDOR_SERVICES + VENDOR_PAYOUTS
-        + VENDOR_INVOICE_SUPPLIER,
+        + VENDOR_INVOICE_SUPPLIER + AGENT_EMAIL_AND_CLIENT_EMAILS,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

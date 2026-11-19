@@ -40,6 +40,12 @@ def create_approval(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*NON_EXEC)),
 ):
+    if payload.vendor_invoice_id is not None:
+        bill = db.get(VendorInvoice, payload.vendor_invoice_id)
+        if bill is None:
+            raise HTTPException(404, "Vendor invoice not found")
+        if not bill.vendor.is_verified:
+            raise HTTPException(400, f"{bill.vendor.business_name} is not verified yet. Verify the vendor before paying it.")
     approval = PaymentApproval(**payload.model_dump(), requested_by_id=user.id)
     if not approval.net_payable:
         approval.net_payable = approval.amount - approval.tax_deductions

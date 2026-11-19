@@ -93,7 +93,7 @@ def _deliver(db: Session, invoice: ClientInvoice, purpose: InvoiceLinkPurpose) -
     url = invoice_links.link_url(link.token)
     is_proforma = purpose == InvoiceLinkPurpose.APPROVE
     emailed = send_invoice_link_email(
-        to_email=invoice.client.email,
+        to_email=", ".join([invoice.client.email, *[e for e in (invoice.client.other_emails or "").split(",") if e]]),
         client_name=invoice.client.business_name,
         document_label="Proforma invoice" if is_proforma else "Tax invoice",
         document_number=invoice.display_number,

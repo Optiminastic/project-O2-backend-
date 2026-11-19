@@ -22,7 +22,7 @@ class AgentCreate(BaseModel):
     business_name: Name
     legal_name: OptionalName = None
     contact_person: OptionalName = None
-    email: EmailStr
+    email: EmailStr | None = None
     phone: OptionalPhone = None
     address: OptionalText = None
     gst_number: OptionalGstin = None
@@ -73,7 +73,7 @@ class AgentOut(BaseModel):
     business_name: str
     legal_name: str | None = None
     contact_person: str | None = None
-    email: EmailStr
+    email: EmailStr | None = None
     phone: str | None = None
     address: str | None = None
     gst_number: str | None = None

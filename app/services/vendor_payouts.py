@@ -179,6 +179,11 @@ def create_vendor_payout(
     ``split="services"`` divides it equally across their service lines; ``"oldest"`` pays
     the oldest bill first.
     """
+    if not vendor.is_verified:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{vendor.business_name} is not verified yet. Verify the vendor before paying it.",
+        )
     if len(invoice_ids) != len(set(invoice_ids)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A bill is selected twice.")
     invoices = db.query(VendorInvoice).filter(VendorInvoice.id.in_(invoice_ids)).all()

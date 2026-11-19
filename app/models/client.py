@@ -14,6 +14,8 @@ class Client(Base, TimestampMixin):
     business_name: Mapped[str] = mapped_column(String(200), index=True)
     legal_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     email: Mapped[str] = mapped_column(String(255))
+    # More addresses that receive the client's invoices, comma separated.
+    other_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     billing_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     gst_number: Mapped[str | None] = mapped_column(String(30), nullable=True)

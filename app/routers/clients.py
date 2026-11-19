@@ -5,14 +5,14 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.deps import get_current_user, require_roles
 from app.models import Client, User, UserRole
-from app.schemas.client import MSME_NUMBER_REQUIRED, ClientCreate, ClientUpdate, ClientOut
+from app.schemas.client import MSME_NUMBER_REQUIRED, ClientCreate, ClientUpdate, ClientOut, clean_other_emails
 from app.services.audit import log_action
 from app.services.agents import resolve_agent_id
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
 # On the intake form and so never cleared by an edit.
-REQUIRED_FIELDS = ("business_name", "email", "billing_address", "gst_number", "coi")
+REQUIRED_FIELDS = ("business_name", "email", "billing_address", "gst_number")
 
 
 @router.get("", response_model=list[ClientOut])
@@ -37,6 +37,7 @@ def create_client(
     ),
 ):
     data = payload.model_dump()
+    data["other_emails"] = ",".join(payload.other_emails) or None
     data["agent_id"] = resolve_agent_id(db, data.get("agent_id"))
     client = Client(**data)
     db.add(client)
@@ -66,6 +67,9 @@ def update_client(
     if not client:
         raise HTTPException(404, "Client not found")
     changes = payload.model_dump(exclude_unset=True)
+    if "other_emails" in changes:
+        cleaned = clean_other_emails(changes["other_emails"], changes.get("email") or client.email)
+        changes["other_emails"] = ",".join(cleaned) or None
     if "agent_id" in changes:
         changes["agent_id"] = resolve_agent_id(db, changes["agent_id"])
     if "msme" in changes and changes["msme"] is None:

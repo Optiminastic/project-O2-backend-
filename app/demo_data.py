@@ -257,6 +257,10 @@ def add_base_demo() -> None:
                           [marketing, integrated, video], "Momentum Events", "State Bank of India", "38211002299",
                           "SBIN0001234", tds="194C_FIRM")
 
+        # Only verified vendors can be paid: verify all but Momentum (left to show the check).
+        for v in (pixel, reach, datalens, codecraft):
+            api.post(f"/vendors/{v['id']}/verify")
+
         # ---- projects, with vendors assigned per service ----
         def assign(vendor_row, *lines):
             return {"vendor_id": vendor_row["id"], "services": [{"service_id": s, "agreed_cost": c} for s, c in lines]}

@@ -21,7 +21,7 @@ class Agent(Base, TimestampMixin):
     business_name: Mapped[str] = mapped_column(String(200), index=True)
     legal_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     contact_person: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    email: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -11,7 +11,7 @@ from tests.conftest import assignment_for, auth_header
 @pytest.fixture
 def vendor(db):
     v = Vendor(business_name="Quanta Research", email="ops@quanta.example", gst_number="29AAGFQ1234C1Z5",
-               commission_rate=10)
+               commission_rate=10, is_verified=True)
     db.add(v)
     db.commit()
     db.refresh(v)
@@ -157,7 +157,7 @@ def test_releasing_a_payment_marks_the_bills_paid(client, users, vendor, db):
 
 
 def test_a_payment_pays_only_the_vendors_own_bills(client, users, vendor, db):
-    other = Vendor(business_name="Field Force", email="hello@fieldforce.example")
+    other = Vendor(business_name="Field Force", email="hello@fieldforce.example", is_verified=True)
     db.add(other)
     db.commit()
     theirs = bill(client, users["exec"], other.id, [(assignment_for(other.id), 1000)]).json()
@@ -224,3 +224,16 @@ def test_payment_can_pay_the_oldest_bill_first(client, users, vendor, db):
     # The older bill is paid in full (both lines), the rest goes to the newer one.
     assert split == [("NEW-1", 680), ("OLD-1", 1160), ("OLD-1", 1160)]
     assert payout(client, users["manager"], vendor.id, [newer["id"]], 1, split="random").status_code == 422
+
+
+def test_an_unverified_vendor_cannot_be_paid(client, users, db):
+    unverified = Vendor(business_name="New Studio", email="hi@newstudio.example")
+    db.add(unverified)
+    db.commit()
+    b = bill(client, users["exec"], unverified.id, [(assignment_for(unverified.id), 1000)]).json()
+    res = payout(client, users["manager"], unverified.id, [b["id"]], 500)
+    assert res.status_code == 400 and "not verified" in res.json()["detail"]
+    # Nor through a plain payment request naming its bill.
+    plain = client.post("/api/approvals", headers=auth_header(users["manager"]),
+                        json={"payee_name": "New Studio", "amount": 500, "vendor_invoice_id": b["id"]})
+    assert plain.status_code == 400

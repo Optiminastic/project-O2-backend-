@@ -69,7 +69,7 @@ def test_blank_optional_fields_are_stored_as_empty(client, users):
     assert res.json()["phone"] is None
 
 
-@pytest.mark.parametrize("field", ["business_name", "email", "gst_number", "billing_address", "coi", "msme"])
+@pytest.mark.parametrize("field", ["business_name", "email", "gst_number", "billing_address", "msme"])
 def test_every_client_form_field_is_required(client, users, field):
     body = client_body()
     del body[field]
@@ -89,11 +89,34 @@ def test_a_client_edit_cannot_blank_a_required_field(client, users):
     made = new_client(client, users["exec"]).json()
     url = f"/api/clients/{made['id']}"
     headers = auth_header(users["manager"])
-    for change in ({"gst_number": ""}, {"billing_address": ""}, {"coi": ""}, {"msme": True}):
+    for change in ({"gst_number": ""}, {"billing_address": ""}, {"msme": True}):
         assert client.patch(url, json=change, headers=headers).status_code == 422, change
-    kept = client.patch(url, json={"gst_number": None, "coi": None}, headers=headers)
+    kept = client.patch(url, json={"gst_number": None}, headers=headers)
     assert kept.status_code == 200, kept.text
-    assert (kept.json()["gst_number"], kept.json()["coi"]) == (made["gst_number"], made["coi"])
+    assert kept.json()["gst_number"] == made["gst_number"]
+
+
+def test_client_coi_is_optional(client, users):
+    body = client_body()
+    del body["coi"]
+    res = client.post("/api/clients", json=body, headers=auth_header(users["exec"]))
+    assert res.status_code == 201, res.text
+    assert res.json()["coi"] is None
+    cleared = client.patch(f"/api/clients/{res.json()['id']}", json={"coi": ""}, headers=auth_header(users["manager"]))
+    assert cleared.status_code == 200 and cleared.json()["coi"] is None
+
+
+def test_a_client_can_have_more_email_addresses(client, users):
+    res = new_client(client, users["exec"], other_emails=["Finance@Globex.example", "ap@globex.example", "finance@globex.example"])
+    assert res.status_code == 201, res.text
+    # Each once, lower-cased, without the primary address.
+    assert res.json()["other_emails"] == ["finance@globex.example"]
+    url, h = f"/api/clients/{res.json()['id']}", auth_header(users["manager"])
+    edited = client.patch(url, json={"other_emails": ["cfo@globex.example", "audit@globex.example"]}, headers=h)
+    assert edited.json()["other_emails"] == ["cfo@globex.example", "audit@globex.example"]
+    assert client.patch(url, json={"phone": "+91 98100 00000"}, headers=h).json()["other_emails"] == ["cfo@globex.example", "audit@globex.example"]
+    assert client.patch(url, json={"other_emails": []}, headers=h).json()["other_emails"] == []
+    assert new_client(client, users["exec"], other_emails=["not-an-email"]).status_code == 422
 
 
 # ---------- vendors and agents ----------
