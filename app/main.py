@@ -27,6 +27,8 @@ from app.routers import (
     services,
     projects,
     banks,
+    assistant,
+    assistant_plugins,
 )
 
 
@@ -76,6 +78,8 @@ api = settings.api_v1_prefix
 for r in (
     auth, team, dashboard, agents, clients, invoices, vendors, taxation, reports,
     approvals, verification, audit, gst, admin, public_invoices, services, projects, banks,
+    assistant,
+    assistant_plugins,
 ):
     app.include_router(r.router, prefix=api)
 

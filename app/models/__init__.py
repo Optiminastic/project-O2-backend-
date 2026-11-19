@@ -27,6 +27,20 @@ from app.models.report import VendorReport, EmailLog
 from app.models.approval import PaymentApproval, ApprovalAction, PayoutAllocation
 from app.models.verification import BankStatement, BankTransaction
 from app.models.audit import AuditLog
+from app.models.assistant import (
+    ACTION_CANCELLED,
+    ACTION_DONE,
+    ACTION_EXPIRED,
+    ACTION_FAILED,
+    ACTION_PENDING,
+    ACTION_RUNNING,
+    AssistantAction,
+    AssistantCommand,
+    AssistantConversation,
+    AssistantFile,
+    AssistantMessage,
+    AssistantPlugin,
+)
 
 __all__ = [
     "UserRole",
@@ -70,4 +84,16 @@ __all__ = [
     "BankStatement",
     "BankTransaction",
     "AuditLog",
+    "AssistantConversation",
+    "AssistantMessage",
+    "AssistantAction",
+    "AssistantFile",
+    "AssistantPlugin",
+    "AssistantCommand",
+    "ACTION_PENDING",
+    "ACTION_RUNNING",
+    "ACTION_DONE",
+    "ACTION_FAILED",
+    "ACTION_CANCELLED",
+    "ACTION_EXPIRED",
 ]
