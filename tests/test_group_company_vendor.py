@@ -80,12 +80,19 @@ def test_on_a_project_a_group_company_shows_its_cost_but_not_its_name(client, db
 
 def test_a_manager_keeps_but_cannot_change_a_group_company_row(client, users, client_row):
     gv = group_vendor(client, users)
-    other = vendor(client, users["manager"], business_name="Print House", email="a@print.example").json()
+    # Each service has one vendor: Print House does a second service on the project.
+    printing = client.post("/api/services", json={"title": "Print production", "sac_code": "998912"},
+                           headers=auth_header(users["manager"])).json()
+    other = vendor(client, users["manager"], business_name="Print House", email="a@print.example",
+                   service_ids=[printing["id"]]).json()
     pid = project_id_for(client_row)
+    client.patch(f"/api/projects/{pid}", json={"service_ids": [default_service_id(), printing["id"]]},
+                 headers=auth_header(users["cfo"]))
     group_row = share(gv["id"], 4000)
+    other_row = {"vendor_id": other["id"], "services": [{"service_id": printing["id"], "agreed_cost": 1000}]}
     client.patch(f"/api/projects/{pid}", json={"vendors": [group_row]}, headers=auth_header(users["cfo"]))
     url, manager = f"/api/projects/{pid}", auth_header(users["manager"])
-    keeps = client.patch(url, json={"vendors": [group_row, share(other["id"], 1000)]}, headers=manager)
+    keeps = client.patch(url, json={"vendors": [group_row, other_row]}, headers=manager)
     assert keeps.status_code == 200, keeps.text
     assert client.patch(url, json={"vendors": [share(gv["id"], 9000)]}, headers=manager).status_code == 403
     assert client.patch(url, json={"vendors": []}, headers=manager).status_code == 403
@@ -94,7 +101,8 @@ def test_a_manager_keeps_but_cannot_change_a_group_company_row(client, users, cl
     one = {"services": [{"service_id": default_service_id(), "agreed_cost": 9000}]}
     assert client.put(f"{url}/vendors/{gv['id']}", json=one, headers=manager).status_code == 403
     assert client.delete(f"{url}/vendors/{gv['id']}", headers=manager).status_code == 403
-    assert client.put(f"{url}/vendors/{other['id']}", json=one, headers=manager).status_code == 200
+    own = {"services": [{"service_id": printing["id"], "agreed_cost": 2000}]}
+    assert client.put(f"{url}/vendors/{other['id']}", json=own, headers=manager).status_code == 200
 
 
 def test_vendor_keeps_its_default_tds_section(client, users):

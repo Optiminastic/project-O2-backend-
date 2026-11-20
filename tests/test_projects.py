@@ -14,10 +14,13 @@ from tests.conftest import auth_header, default_service_id
 
 @pytest.fixture
 def vendors(db):
+    """Two vendors providing the default service; Field Force also does data collection."""
     service = db.get(Service, default_service_id())
+    collection = Service(title=COLLECTION, sac_code="998372", gst_rate=18)
+    db.add(collection)
     rows = [
         Vendor(business_name="Quanta Research", email="ops@quanta.example", services=[service]),
-        Vendor(business_name="Field Force", email="hello@fieldforce.example", services=[service]),
+        Vendor(business_name="Field Force", email="hello@fieldforce.example", services=[service, collection]),
     ]
     db.add_all(rows)
     db.commit()
@@ -37,6 +40,16 @@ def second_service(db, vendors):
     return s
 
 
+COLLECTION = "Data collection"
+
+
+def collection_id():
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        return session.query(Service).filter(Service.title == COLLECTION).one().id
+
+
 def share(vendor, cost, service_id=None):
     return {"vendor_id": vendor.id, "services": [{"service_id": service_id or default_service_id(), "agreed_cost": cost}]}
 
@@ -48,11 +61,11 @@ def project_body(client_row, vendors, **overrides):
         "brand": "Axis Bank",
         "description": "Survey 2,000 customers across 8 cities.",
         "client_id": client_row.id,
-        "service_id": default_service_id(),
+        "service_ids": [default_service_id(), collection_id()],
         "budget": 500000,
         "start_date": "2026-10-01",
         "end_date": "2026-11-20",
-        "vendors": [share(vendors[0], 240000), share(vendors[1], 160000)],
+        "vendors": [share(vendors[0], 240000), share(vendors[1], 160000, collection_id())],
         **overrides,
     }
     return body
@@ -193,10 +206,39 @@ def test_end_date_cannot_be_before_start(client, users, client_row, vendors):
     assert res.status_code == 400
 
 
-def test_over_budget_is_flagged(client, users, client_row, vendors):
-    p = create(client, users["manager"], project_body(client_row, vendors, budget=350000)).json()
-    assert p["over_budget"] is True
-    assert p["remaining_budget"] == -50000
+def test_vendors_cannot_go_past_the_vendor_budget(client, users, client_row, vendors):
+    res = create(client, users["manager"], project_body(client_row, vendors, budget=350000))
+    assert res.status_code == 400 and "vendor budget" in res.json()["detail"]
+    # Exactly 100% allocated is fine; then no more cost can be added.
+    p = create(client, users["manager"], project_body(client_row, vendors, budget=400000)).json()
+    assert (p["committed_cost"], p["remaining_budget"]) == (400000, 0)
+    url, h = f"/api/projects/{p['id']}/vendors/{vendors[1].id}", auth_header(users["manager"])
+    more = {"services": [{"service_id": collection_id(), "agreed_cost": 160001}]}
+    assert client.put(url, json=more, headers=h).status_code == 400
+    # Lowering a cost is always allowed.
+    less = {"services": [{"service_id": collection_id(), "agreed_cost": 100000}]}
+    assert client.put(url, json=less, headers=h).status_code == 200
+
+
+def test_a_project_without_a_budget_has_no_cap(client, users, client_row, vendors):
+    res = create(client, users["manager"], project_body(client_row, vendors, budget=0))
+    assert res.status_code == 201, res.text
+
+
+def test_each_service_has_one_vendor(client, users, client_row, vendors):
+    p = create(client, users["manager"], project_body(client_row, vendors)).json()
+    h = auth_header(users["manager"])
+    # Field Force cannot also take Quanta's service.
+    clash = {"services": [{"service_id": collection_id(), "agreed_cost": 160000},
+                          {"service_id": default_service_id(), "agreed_cost": 1000}]}
+    res = client.put(f"/api/projects/{p['id']}/vendors/{vendors[1].id}", json=clash, headers=h)
+    assert res.status_code == 400 and "already has a vendor" in res.json()["detail"]
+    both = {"vendors": [share(vendors[0], 1000), share(vendors[1], 1000)]}
+    assert client.patch(f"/api/projects/{p['id']}", json=both, headers=h).status_code == 400
+    # Moving the service from one vendor to the other in one save is fine.
+    moved = {"vendors": [share(vendors[1], 1000)]}
+    res = client.patch(f"/api/projects/{p['id']}", json=moved, headers=h)
+    assert res.status_code == 200, res.text
 
 
 def test_finance_executive_can_view_but_not_create(client, users, client_row, vendors):
@@ -324,8 +366,9 @@ def test_margin_is_shown_per_service(client, users, client_row, vendors, db):
     inv.lines = [InvoiceLine(service_id=default_service_id(), service_title="Finance retainer", taxable_value=500000)]
     db.add(inv)
     db.commit()
-    (row,) = client.get(f"/api/projects/{p['id']}", headers=auth_header(users["exec"])).json()["service_margins"]
-    assert (row["billed"], row["vendor_committed"], row["vendor_invoiced"], row["margin"]) == (500000, 400000, 200000, 300000)
+    rows = client.get(f"/api/projects/{p['id']}", headers=auth_header(users["exec"])).json()["service_margins"]
+    row = next(r for r in rows if r["service_id"] == default_service_id())
+    assert (row["billed"], row["vendor_committed"], row["vendor_invoiced"], row["margin"]) == (500000, 240000, 200000, 300000)
 
 
 def test_vendor_with_invoices_cannot_be_removed_and_project_cannot_be_deleted(client, users, client_row, vendors):
@@ -426,3 +469,18 @@ def test_existing_vendors_on_projects_become_coded_services(db, client_row):
     assert [s.id for s in db.get(Vendor, v1.id).services] == [default_service_id()]
     (line,) = db.query(VendorInvoiceLine).all()
     assert (line.assignment.code, line.amount) == ("LEGACY-7-V01-S01", 300)
+
+
+def test_project_reports_the_gst_on_what_is_billed(client, users, client_row, vendors, db):
+    from app.models import ClientInvoice, InvoiceStatus
+
+    p = create(client, users["manager"], project_body(client_row, vendors)).json()
+    for number, status_, taxable in (("INV/G1", InvoiceStatus.SENT, 100000), ("INV/G2", InvoiceStatus.CANCELLED, 50000)):
+        db.add(ClientInvoice(client_id=client_row.id, agent_id=client_row.agent_id, project_id=p["id"],
+                             service_id=default_service_id(), status=status_, invoice_number=number,
+                             invoice_date=business_date(), taxable_value=taxable, gst_amount=taxable * 0.18,
+                             total_amount=taxable * 1.18))
+    db.commit()
+    detail = client.get(f"/api/projects/{p['id']}", headers=auth_header(users["exec"])).json()
+    # Cancelled invoices do not count.
+    assert (detail["billed"], detail["billed_gst"]) == (100000, 18000)

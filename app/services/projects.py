@@ -115,19 +115,60 @@ def _assert_assignable(project: Project, vendor: Vendor, services: list[Service]
         )
 
 
-def assign_vendor(db: Session, project: Project, vendor: Vendor, wanted: list[AssignedServiceIn]) -> ProjectVendor:
+def committed_cost(project: Project) -> float:
+    return round(sum(pv.agreed_cost or 0 for pv in project.vendors), 2)
+
+
+def assert_within_budget(project: Project, committed_before: float) -> None:
+    """With a vendor budget set, an assignment may not take the agreed vendor costs past it.
+
+    Once the budget is 100% allocated no more cost can be added; lowering costs is always allowed.
+    """
+    after = committed_cost(project)
+    budget = project.budget or 0
+    if budget > 0 and after > budget + 0.005 and after > committed_before + 0.005:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"This takes the vendor costs to ₹{after:,.2f}, over the project's ₹{budget:,.2f} vendor budget"
+            f" (₹{max(budget - committed_before, 0):,.2f} was left). Raise the budget or lower the agreed costs.",
+        )
+
+
+def _assert_one_vendor_per_service(project: Project, vendor: Vendor, new_service_ids: set[int]) -> None:
+    """Each service on a project is delivered by one vendor. Pairs made before this rule are left as they are."""
+    taken = {line.service_id: pv.vendor.business_name for pv in project.vendors if pv.vendor_id != vendor.id
+             for line in pv.services}
+    clash = [(sid, taken[sid]) for sid in new_service_ids if sid in taken]
+    if clash:
+        titles = {s.id: s.title for s in project.services}
+        listed = ", ".join(f"{titles.get(sid, 'A service')} (done by {name})" for sid, name in clash)
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{listed} already has a vendor on this project. Each service has one vendor; change that vendor instead.",
+        )
+
+
+def assign_vendor(
+    db: Session, project: Project, vendor: Vendor, wanted: list[AssignedServiceIn], check_budget: bool = True,
+    check_clash: bool = True,
+) -> ProjectVendor:
     """Put ``vendor`` on the project for exactly the ``wanted`` services, at their agreed costs.
 
     A service already assigned keeps its code; a new one gets the next code; a
     removed one goes, unless a vendor bill already charges it. Any change to an
-    issued work order marks it to be sent again.
+    issued work order marks it to be sent again. A service another vendor already
+    does is refused, and so is going past the vendor budget (``check_budget``).
     """
     by_id = {s.id: s for s in db.query(Service).filter(Service.id.in_([w.service_id for w in wanted])).all()}
     if len(by_id) != len({w.service_id for w in wanted}):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Service not found")
     _assert_assignable(project, vendor, [by_id[w.service_id] for w in wanted])
+    before = committed_cost(project)
 
     pv = next((x for x in project.vendors if x.vendor_id == vendor.id), None)
+    if check_clash:
+        already = {line.service_id for line in pv.services} if pv else set()
+        _assert_one_vendor_per_service(project, vendor, {w.service_id for w in wanted} - already)
     if pv is None:
         project.last_vendor_seq = (project.last_vendor_seq or 0) + 1
         pv = ProjectVendor(vendor=vendor, vendor_id=vendor.id, vendor_seq=project.last_vendor_seq,
@@ -162,6 +203,8 @@ def assign_vendor(db: Session, project: Project, vendor: Vendor, wanted: list[As
     pv.agreed_cost = round(sum(line.agreed_cost for line in lines), 2)
     if changed and pv.work_order_number:
         pv.work_order_outdated = True
+    if check_budget:
+        assert_within_budget(project, before)
     return pv
 
 
@@ -187,9 +230,27 @@ def replace_vendors(db: Session, project: Project, shares: list[ProjectVendorIn]
             status.HTTP_400_BAD_REQUEST,
             f"{', '.join(blocked)} already invoiced this project, so they cannot be removed from it.",
         )
-    project.vendors = [pv for pv in project.vendors if pv.vendor_id in wanted]
+    # The whole set is given, so check it as a whole: one vendor per service (pairs already
+    # on the project may stay), and the vendor budget once everything is in place.
+    existing_pairs = {(pv.vendor_id, line.service_id) for pv in project.vendors for line in pv.services}
+    seen: dict[int, int] = {}
     for share in shares:
-        assign_vendor(db, project, vendors[share.vendor_id], share.services)
+        for s in share.services:
+            other = seen.get(s.service_id)
+            if other is not None and not {(other, s.service_id), (share.vendor_id, s.service_id)} <= existing_pairs:
+                title = next((x.title for x in project.services if x.id == s.service_id), "A service")
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"{title} is given to two vendors. Each service has one vendor on a project.",
+                )
+            seen[s.service_id] = share.vendor_id
+    before = committed_cost(project)
+    project.vendors = [pv for pv in project.vendors if pv.vendor_id in wanted]
+    # The clash check ran over the whole set above, so moving a service from one vendor to
+    # another in the same save is fine; each vendor is then updated without re-checking it.
+    for share in shares:
+        assign_vendor(db, project, vendors[share.vendor_id], share.services, check_budget=False, check_clash=False)
+    assert_within_budget(project, before)
 
 
 def assert_services_not_assigned(project: Project, service_ids: list[int]) -> None:
@@ -327,6 +388,19 @@ def _billed(db: Session, project_ids: list[int]) -> dict[int, float]:
     return {p: round(total or 0.0, 2) for p, total in rows}
 
 
+def _billed_gst(db: Session, project_ids: list[int]) -> dict[int, float]:
+    """GST on what is billed to the client per project (proformas included, cancelled excluded)."""
+    if not project_ids:
+        return {}
+    rows = (
+        db.query(ClientInvoice.project_id, func.sum(ClientInvoice.gst_amount))
+        .filter(ClientInvoice.project_id.in_(project_ids), ClientInvoice.status != InvoiceStatus.CANCELLED)
+        .group_by(ClientInvoice.project_id)
+        .all()
+    )
+    return {p: round(total or 0.0, 2) for p, total in rows}
+
+
 def _billed_by_service(db: Session, project_ids: list[int]) -> dict[tuple[int, int], float]:
     """Taxable value billed to the client per (project, service), cancelled invoices excluded."""
     if not project_ids:
@@ -344,10 +418,10 @@ def _billed_by_service(db: Session, project_ids: list[int]) -> dict[tuple[int, i
 
 def project_views(db: Session, projects: list[Project]) -> list[ProjectOut]:
     ids = [p.id for p in projects]
-    invoiced, billed = _invoiced(db, ids), _billed(db, ids)
+    invoiced, billed, billed_gst = _invoiced(db, ids), _billed(db, ids), _billed_gst(db, ids)
     lines = _invoiced_assignments(db, [line.id for p in projects for pv in p.vendors for line in pv.services])
     by_service = _billed_by_service(db, ids)
-    return [_view(p, invoiced, billed.get(p.id, 0.0), lines, by_service) for p in projects]
+    return [_view(p, invoiced, billed.get(p.id, 0.0), lines, by_service, billed_gst.get(p.id, 0.0)) for p in projects]
 
 
 def _service_margins(project: Project, lines: dict[int, float], by_service: dict[tuple[int, int], float]):
@@ -370,6 +444,7 @@ def _view(
     billed: float,
     lines: dict[int, float] | None = None,
     by_service: dict[tuple[int, int], float] | None = None,
+    billed_gst: float = 0.0,
 ) -> ProjectOut:
     lines, by_service = lines or {}, by_service or {}
     vendors = []
@@ -428,6 +503,7 @@ def _view(
         over_budget=committed > project.budget,
         contract_value=contract,
         billed=billed,
+        billed_gst=billed_gst,
         left_to_bill=round(contract - billed, 2) if contract > 0 else None,
         over_contract=contract > 0 and billed > contract,
         margin=round(billed - vendor_cost, 2),

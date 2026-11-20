@@ -440,6 +440,37 @@ def _run(engine: Engine, statements: tuple[str, ...]) -> None:
 
 # Matches alembic revision e1a7c3f9b2d4 (Ask O2 assistant). The tables come from create_all;
 # this keeps the pending-action lookup fast on databases created before the model had the index.
+# Matches alembic revision a3c8e1f5b9d2 (cash received / paid out to agents, against UPS codes).
+CASH = (
+    """
+    CREATE TABLE IF NOT EXISTS cash_entries (
+        id SERIAL PRIMARY KEY,
+        direction VARCHAR(3) NOT NULL,
+        entry_date DATE NOT NULL,
+        amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+        agent_id INTEGER REFERENCES agents(id),
+        note TEXT,
+        created_by_id INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_cash_entries_direction ON cash_entries (direction)",
+    "CREATE INDEX IF NOT EXISTS ix_cash_entries_entry_date ON cash_entries (entry_date)",
+    "CREATE INDEX IF NOT EXISTS ix_cash_entries_agent_id ON cash_entries (agent_id)",
+    """
+    CREATE TABLE IF NOT EXISTS cash_entry_lines (
+        id SERIAL PRIMARY KEY,
+        entry_id INTEGER NOT NULL REFERENCES cash_entries(id) ON DELETE CASCADE,
+        assignment_id INTEGER NOT NULL REFERENCES project_vendor_services(id),
+        amount DOUBLE PRECISION NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_cash_entry_lines_entry_id ON cash_entry_lines (entry_id)",
+    "CREATE INDEX IF NOT EXISTS ix_cash_entry_lines_assignment_id ON cash_entry_lines (assignment_id)",
+)
+
+
 ASSISTANT = ("CREATE INDEX IF NOT EXISTS ix_assistant_actions_status ON assistant_actions (status)",)
 
 
@@ -451,7 +482,7 @@ def apply(engine: Engine) -> None:
         INVOICE_WORKFLOW + AGENTS_COLUMNS + SERVICES + PAYMENTS_BANK + VENDOR_ONBOARDING + PROJECTS + TAX_TRACKING
         + PROJECT_INVOICING + FORMS_PER_SHEET + COMPANY_BANKS + DATA_UPGRADES + COORDINATOR_ROLE + MULTI_INVOICE_RECEIPTS
         + VENDOR_GROUP_AND_TDS + E_INVOICE + VENDOR_MSME + PROJECT_VENDOR_SERVICES + VENDOR_PAYOUTS
-        + VENDOR_INVOICE_SUPPLIER + AGENT_EMAIL_AND_CLIENT_EMAILS + ASSISTANT,
+        + VENDOR_INVOICE_SUPPLIER + AGENT_EMAIL_AND_CLIENT_EMAILS + ASSISTANT + CASH,
     )
     _ensure_house_agent(engine)
     if settings.seed_service_catalogue:

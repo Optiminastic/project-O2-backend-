@@ -30,6 +30,7 @@ from app.routers import (
     banks,
     assistant,
     assistant_plugins,
+    cash,
 )
 
 
@@ -83,6 +84,7 @@ for r in (
     approvals, verification, audit, gst, admin, public_invoices, services, projects, banks,
     assistant,
     assistant_plugins,
+    cash,
 ):
     app.include_router(r.router, prefix=api)
 

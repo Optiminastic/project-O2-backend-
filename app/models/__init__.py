@@ -27,6 +27,7 @@ from app.models.report import VendorReport, EmailLog
 from app.models.approval import PaymentApproval, ApprovalAction, PayoutAllocation
 from app.models.verification import BankStatement, BankTransaction
 from app.models.audit import AuditLog
+from app.models.cash import CashEntry, CashEntryLine
 from app.models.assistant import (
     ACTION_CANCELLED,
     ACTION_DONE,
@@ -43,6 +44,8 @@ from app.models.assistant import (
 )
 
 __all__ = [
+    "CashEntry",
+    "CashEntryLine",
     "UserRole",
     "InvitationStatus",
     "InvoiceStatus",

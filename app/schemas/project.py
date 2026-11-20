@@ -191,6 +191,8 @@ class ProjectOut(BaseModel):
     # Billing to the client: taxable value of its invoices that are not cancelled.
     contract_value: float
     billed: float
+    # GST on what is billed (billed + billed_gst = total invoice value).
+    billed_gst: float = 0.0
     left_to_bill: float | None  # None when no contract value is set
     over_contract: bool
     margin: float  # billed minus what vendors have invoiced
